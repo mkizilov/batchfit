@@ -4,3 +4,6 @@
 .venv/
 _opam/
 .DS_Store
+build/
+third_party/metal-cpp/
+__pycache__/

@@ -1,0 +1,32 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {"major": 3, "minor": 24, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BATCHFIT_BUILD_TESTS": "ON",
+        "BATCHFIT_BUILD_BENCHMARKS": "ON"
+      }
+    },
+    {"name": "cpu", "inherits": "base", "cacheVariables": {"BATCHFIT_METAL": "OFF"}},
+    {
+      "name": "metal",
+      "inherits": "base",
+      "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin"},
+      "cacheVariables": {"BATCHFIT_METAL": "ON"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "cpu", "configurePreset": "cpu", "jobs": 2},
+    {"name": "metal", "configurePreset": "metal", "jobs": 2}
+  ],
+  "testPresets": [
+    {"name": "cpu", "configurePreset": "cpu", "output": {"outputOnFailure": true}, "execution": {"jobs": 2, "noTestsAction": "error"}},
+    {"name": "metal", "configurePreset": "metal", "output": {"outputOnFailure": true}, "execution": {"jobs": 2, "noTestsAction": "error"}}
+  ]
+}

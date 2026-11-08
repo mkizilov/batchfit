@@ -15,3 +15,62 @@
 - End each turn with a short summary of changes, checks actually run, remaining limitations, and commit hash. The orchestrator will provide the next prompt only after this turn ends.
 
 Extend this file with the project's language-specific architecture and verification commands while retaining these boundaries.
+
+## Architecture
+
+- C++20 library target `batchfit::batchfit`; public headers in `include/batchfit/`.
+- `src/cpu/` owns the numerical reference; `src/metal/` owns metal-cpp host code
+  and `.metal` shaders. Internal headers stay in `src/`. Python bindings are later.
+- **The CPU reference is the source of truth. Every GPU result is tested against
+  it.** Never loosen numerical tests merely to make a backend pass.
+- Check and report every Metal error with context: shader compilation, kernel
+  lookup, pipeline creation, resource/encoder allocation and command-buffer
+  completion status. An explicit Metal request must not silently fall back.
+- The initial residual smoke primitive is not the LM fitting implementation.
+  Follow `DESIGN.md` for the eventual public fitting contract and precision rules.
+- CMake 3.24+ presets isolate CPU and Metal builds. `BATCHFIT_METAL=ON` is the
+  macOS default; `OFF` must never fetch metal-cpp or link Apple frameworks.
+- GoogleTest and Google Benchmark use pinned FetchContent archives; metal-cpp
+  downloads into `third_party/`. Keep third-party code out of formatting/tidy.
+
+## Setup and verification
+
+Keep uv 0.9.8 local (see README); `sh scripts/bootstrap.sh` creates `.venv` using
+uv and exact tool pins in `pyproject.toml`. Preserve supplied environment paths.
+Use `export PATH="$PWD/.venv/bin:$PATH"` before manual build commands.
+
+```sh
+cmake --preset cpu
+cmake --build --preset cpu
+ctest --preset cpu
+cmake --preset metal       # macOS only
+cmake --build --preset metal
+ctest --preset metal
+python3 tools/check_format.py
+python3 tools/run_tidy.py build/cpu
+python3 tools/run_tidy.py build/metal  # macOS only
+sh scripts/check.sh
+```
+
+Use `clang-format -i <files>` for maintained C++/Metal files; `.clang-format` is
+authoritative. `clang-tidy` uses `.clang-tidy` plus each build's compile database.
+`tools/run_tidy.py` runs the library translation units serially, including Metal
+host code in its build. All ordinary builds/tests have at most two workers.
+
+**All checks pass** means `scripts/check.sh` exits zero: formatting is clean,
+both required presets configure/build, every CTest/GoogleTest passes, clang-tidy
+has no selected warnings, and the bounded Google Benchmark smoke completes.
+Metal is required on macOS, not skipped when the device is missing; elsewhere
+the CPU-only gate applies. Missing dependencies or unavailable device access are
+explicit limitations, never a green gate. The README offline smoke command is a
+diagnostic subset only. No Docker or server process is needed for this scaffold.
+
+## Definition of done for every future task
+
+1. Implement only the current numbered task and preserve earlier behavior.
+2. `scripts/check.sh` passes; if an environment constraint prevents this, state
+   exactly which commands failed or were not run, with actual subset results.
+3. Update relevant documentation and remove temporary outputs/stop owned processes.
+4. Give a short summary of changes, real checks and remaining limitations, and
+   make a local conventional-commit Git commit containing only intended changes.
+   Include its hash at handoff. Do not push.

@@ -1,0 +1,4 @@
+#pragma once
+namespace batchfit::detail {
+inline constexpr const char* residuals_shader = R"batchfit(@BATCHFIT_SHADER_SOURCE@)batchfit";
+}
