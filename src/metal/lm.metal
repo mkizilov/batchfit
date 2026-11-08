@@ -1,11 +1,38 @@
 #include <batchfit/metal/types.hpp>
 #include <batchfit/models.hpp>
+#include <batchfit/numerics.hpp>
 #include <metal_stdlib>
 #pragma METAL fp contract(on)
 using namespace metal;
 using batchfit::metal::detail::Config;
+constant uint requested_numerics [[function_constant(0)]];
+constant uint numerical_mode =
+    is_function_constant_defined(requested_numerics) ? requested_numerics : 0u;
 
-enum : uint { converged, max_iterations, singular_matrix, invalid_input };
+enum : uint {
+    converged,
+    max_iterations,
+    singular_matrix,
+    invalid_input,
+    degenerate_data,
+    unresolved_peak
+};
+bool finite_value(float value) { return (as_type<uint>(value) & 0x7f800000u) != 0x7f800000u; }
+bool nan_value(float value) { return (as_type<uint>(value) & 0x7fffffffu) > 0x7f800000u; }
+template <uint P> bool free_shape(constant Config &cfg) {
+    bool free = cfg.lower[1] != cfg.upper[1] || cfg.lower[2] != cfg.upper[2];
+    if (P == 4)
+        free = free || cfg.lower[3] != cfg.upper[3];
+    if (P == 8)
+        free = free || cfg.lower[4] != cfg.upper[4] || cfg.lower[5] != cfg.upper[5];
+    return free;
+}
+uint resolved_status(float first, float second, uint p, float spacing, float factor) {
+    return spacing > 0 &&
+                   (abs(first) * factor < spacing || (p == 8 && abs(second) * factor < spacing))
+               ? unresolved_peak
+               : converged;
+}
 template <uint P> struct LMResult {
     float parameters[P];
     uint status, iterations;
@@ -20,22 +47,39 @@ float observation(device const Sample *y, constant Config &cfg, uint fit, uint p
 template <typename Model, typename Sample = float, bool PointMajor = true>
 float cost(device const float *x, device const Sample *y, constant Config &cfg, uint fit,
            thread const float *params) {
-    float value = 0;
+    float value = 0, correction = 0;
     for (uint j = 0; j < cfg.points; ++j) {
         const float residual =
             observation<Sample, PointMajor>(y, cfg, fit, j) - Model::eval(x[j], params);
-        value += residual * residual;
+        if (numerical_mode & 1u)
+            batchfit::numerics::add(residual * residual, value, correction);
+        else
+            value += residual * residual;
     }
     return value;
 }
 
-template <uint P> bool cholesky(thread float matrix[P][P], thread float rhs[P]) {
+template <uint P>
+bool cholesky(thread float matrix[P][P], thread float rhs[P], bool scaled = false) {
+    float scale[P];
+    if (scaled) {
+        for (uint i = 0; i < P; ++i) {
+            if (!finite_value(matrix[i][i]) || matrix[i][i] <= 0)
+                return false;
+            scale[i] = sqrt(matrix[i][i]);
+        }
+        for (uint i = 0; i < P; ++i) {
+            rhs[i] /= scale[i];
+            for (uint j = 0; j < P; ++j)
+                matrix[i][j] = (matrix[i][j] / scale[i]) / scale[j];
+        }
+    }
     for (uint i = 0; i < P; ++i) {
         for (uint j = 0; j <= i; ++j) {
             float value = matrix[i][j];
             for (uint k = 0; k < j; ++k)
                 value -= matrix[i][k] * matrix[j][k];
-            if (!isfinite(value) || (i == j && value <= 0))
+            if (!finite_value(value) || (i == j && value <= 0))
                 return false;
             matrix[i][j] = i == j ? sqrt(value) : value / matrix[j][j];
         }
@@ -49,9 +93,15 @@ template <uint P> bool cholesky(thread float matrix[P][P], thread float rhs[P]) 
         for (uint j = i + 1; j < P; ++j)
             value -= matrix[j][i] * rhs[j];
         rhs[i] = value / matrix[i][i];
-        if (!isfinite(rhs[i]))
+        if (!finite_value(rhs[i]))
             return false;
     }
+    if (scaled)
+        for (uint i = 0; i < P; ++i) {
+            rhs[i] /= scale[i];
+            if (!finite_value(rhs[i]))
+                return false;
+        }
     return true;
 }
 
@@ -66,24 +116,36 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
     result.chi_squared = NAN;
     for (uint k = 0; k < P; ++k)
         result.parameters[k] = initial[fit * P + k];
-    if (!isfinite(cfg.initial_lambda) || cfg.initial_lambda <= 0)
+    if (cfg.numerics != numerical_mode)
+        return result;
+    if (!finite_value(cfg.initial_lambda) || cfg.initial_lambda <= 0)
         return result;
     const float tolerances[3] = {cfg.gradient_tolerance, cfg.step_tolerance, cfg.cost_tolerance};
     for (uint k = 0; k < 3; ++k)
-        if (!isfinite(tolerances[k]) || tolerances[k] < 0)
+        if (!finite_value(tolerances[k]) || tolerances[k] < 0)
             return result;
     for (uint k = 0; k < P; ++k)
-        if (!isfinite(result.parameters[k]) || isnan(cfg.lower[k]) || isnan(cfg.upper[k]) ||
-            cfg.lower[k] > cfg.upper[k] || cfg.lower[k] == INFINITY || cfg.upper[k] == -INFINITY)
+        if (!finite_value(result.parameters[k]) || nan_value(cfg.lower[k]) ||
+            nan_value(cfg.upper[k]) || cfg.lower[k] > cfg.upper[k] ||
+            as_type<uint>(cfg.lower[k]) == 0x7f800000u ||
+            as_type<uint>(cfg.upper[k]) == 0xff800000u)
             return result;
-    for (uint j = 0; j < cfg.points; ++j)
-        if (!isfinite(x[j]) || !isfinite(observation<Sample, PointMajor>(y, cfg, fit, j)))
+    bool varied_y = false;
+    for (uint j = 0; j < cfg.points; ++j) {
+        if (!finite_value(x[j]) || !finite_value(observation<Sample, PointMajor>(y, cfg, fit, j)))
             return result;
+        varied_y = varied_y || observation<Sample, PointMajor>(y, cfg, fit, j) !=
+                                   observation<Sample, PointMajor>(y, cfg, fit, 0);
+    }
     for (uint k = 0; k < P; ++k)
         result.parameters[k] = clamp(result.parameters[k], cfg.lower[k], cfg.upper[k]);
     result.chi_squared = cost<Model, Sample, PointMajor>(x, y, cfg, fit, result.parameters);
-    if (!isfinite(result.chi_squared)) {
+    if (!finite_value(result.chi_squared)) {
         result.chi_squared = NAN;
+        return result;
+    }
+    if (!varied_y && cfg.varied_x && free_shape<P>(cfg)) {
+        result.status = degenerate_data;
         return result;
     }
     result.status = max_iterations;
@@ -91,11 +153,14 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
     float lambda = cfg.initial_lambda;
     const float maximum_lambda = max(cfg.initial_lambda, 1.0f / epsilon);
     for (uint iteration = 0; iteration < cfg.max_iterations; ++iteration) {
-        float matrix[P][P], gradient[P];
+        float matrix[P][P], gradient[P], matrix_correction[P][P], gradient_correction[P];
         for (uint k = 0; k < P; ++k) {
             gradient[k] = 0;
-            for (uint l = 0; l < P; ++l)
+            gradient_correction[k] = 0;
+            for (uint l = 0; l < P; ++l) {
                 matrix[k][l] = 0;
+                matrix_correction[k][l] = 0;
+            }
         }
         for (uint j = 0; j < cfg.points; ++j) {
             const float residual = observation<Sample, PointMajor>(y, cfg, fit, j) -
@@ -103,18 +168,26 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
             float jacobian[P];
             Model::jacobian(x[j], result.parameters, jacobian);
             for (uint k = 0; k < P; ++k) {
-                gradient[k] += jacobian[k] * residual;
+                if (numerical_mode & 1u)
+                    batchfit::numerics::add(jacobian[k] * residual, gradient[k],
+                                            gradient_correction[k]);
+                else
+                    gradient[k] += jacobian[k] * residual;
                 for (uint l = 0; l <= k; ++l)
-                    matrix[k][l] += jacobian[k] * jacobian[l];
+                    if (numerical_mode & 1u)
+                        batchfit::numerics::add(jacobian[k] * jacobian[l], matrix[k][l],
+                                                matrix_correction[k][l]);
+                    else
+                        matrix[k][l] += jacobian[k] * jacobian[l];
             }
         }
         for (uint k = 0; k < P; ++k) {
-            if (!isfinite(gradient[k])) {
+            if (!finite_value(gradient[k])) {
                 result.status = invalid_input;
                 return result;
             }
             for (uint l = 0; l <= k; ++l) {
-                if (!isfinite(matrix[k][l])) {
+                if (!finite_value(matrix[k][l])) {
                     result.status = invalid_input;
                     return result;
                 }
@@ -131,7 +204,8 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
                 gradient_norm = max(gradient_norm, abs(gradient[k]));
         }
         if (gradient_norm <= cfg.gradient_tolerance) {
-            result.status = converged;
+            result.status = resolved_status(result.parameters[2], result.parameters[min(P - 1, 5u)],
+                                            P, cfg.minimum_spacing, cfg.width_factor);
             return result;
         }
         float damped[P][P], delta[P];
@@ -143,7 +217,7 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
                 damped[k][k] += lambda * matrix[k][k];
         }
         result.iterations = iteration + 1;
-        if (!cholesky<P>(damped, delta)) {
+        if (!cholesky<P>(damped, delta, (numerical_mode & 2u) != 0)) {
             result.status = singular_matrix;
             return result;
         }
@@ -152,13 +226,14 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
         for (uint k = 0; k < P; ++k) {
             step_norm = max(step_norm, abs(delta[k]));
             trial[k] = clamp(result.parameters[k] + delta[k], cfg.lower[k], cfg.upper[k]);
-            finite_trial = finite_trial && isfinite(trial[k]);
+            finite_trial = finite_trial && finite_value(trial[k]);
             delta[k] = trial[k] - result.parameters[k];
             parameter_norm = max(parameter_norm, abs(result.parameters[k]));
         }
         if (step_norm <=
             cfg.step_tolerance * (parameter_norm + cfg.step_tolerance) / max(1.0f, lambda)) {
-            result.status = converged;
+            result.status = resolved_status(result.parameters[2], result.parameters[min(P - 1, 5u)],
+                                            P, cfg.minimum_spacing, cfg.width_factor);
             return result;
         }
         for (uint k = 0; k < P; ++k) {
@@ -170,10 +245,11 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
             finite_trial ? cost<Model, Sample, PointMajor>(x, y, cfg, fit, trial) : NAN;
         const float reduction = result.chi_squared - trial_cost;
         const float threshold = cfg.cost_tolerance * result.chi_squared;
-        const bool small_cost_change = isfinite(trial_cost) && isfinite(predicted_reduction) &&
+        const bool small_cost_change = finite_value(trial_cost) &&
+                                       finite_value(predicted_reduction) &&
                                        predicted_reduction >= 0 && abs(reduction) <= threshold &&
                                        predicted_reduction <= threshold / max(1.0f, lambda);
-        if (isfinite(trial_cost) && reduction > 0 && isfinite(predicted_reduction) &&
+        if (finite_value(trial_cost) && reduction > 0 && finite_value(predicted_reduction) &&
             predicted_reduction > 0) {
             for (uint k = 0; k < P; ++k)
                 result.parameters[k] = trial[k];
@@ -187,7 +263,8 @@ LMResult<Model::parameter_count> solve(device const float *x, device const Sampl
         } else
             lambda = min(maximum_lambda, lambda * 10.0f);
         if (small_cost_change) {
-            result.status = converged;
+            result.status = resolved_status(result.parameters[2], result.parameters[min(P - 1, 5u)],
+                                            P, cfg.minimum_spacing, cfg.width_factor);
             return result;
         }
     }

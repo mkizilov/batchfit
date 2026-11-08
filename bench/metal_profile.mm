@@ -147,9 +147,16 @@ struct Profiler {
                                                                      : "_fit_float");
                 NSString *function_name = [NSString stringWithUTF8String:kernel.c_str()];
                 check(function_name != nil, "convert profiling kernel name to UTF-8");
-                id<MTLFunction> function = [library newFunctionWithName:function_name];
-                check(function != nil, "find " + kernel);
                 NSError *error = nil;
+                MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
+                check(constants != nil, "allocate default profiling numerics");
+                const unsigned numerics = 0;
+                [constants setConstantValue:&numerics type:MTLDataTypeUInt atIndex:0];
+                id<MTLFunction> function = [library newFunctionWithName:function_name
+                                                         constantValues:constants
+                                                                  error:&error];
+                check(function != nil, "specialize " + kernel, error);
+                error = nil;
                 id<MTLComputePipelineState> pipeline =
                     [device newComputePipelineStateWithFunction:function error:&error];
                 check(pipeline != nil, "pipeline " + kernel, error);

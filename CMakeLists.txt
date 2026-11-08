@@ -51,13 +51,13 @@ if(BATCHFIT_METAL)
     add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/lm_source.hpp"
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/embed_metal.py"
             "${PROJECT_BINARY_DIR}/generated/lm_source.hpp"
-        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/cooperative.metal include/batchfit/models.hpp
+        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/cooperative.metal include/batchfit/models.hpp include/batchfit/numerics.hpp
             include/batchfit/metal/types.hpp VERBATIM)
     target_sources(batchfit PRIVATE "${PROJECT_BINARY_DIR}/generated/lm_source.hpp")
     add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/profile_source.hpp"
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/embed_metal.py"
             "${PROJECT_BINARY_DIR}/generated/profile_source.hpp" --profile
-        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/cooperative.metal src/metal/profile_variants.metal
+        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/cooperative.metal src/metal/profile_variants.metal include/batchfit/numerics.hpp
             include/batchfit/models.hpp include/batchfit/metal/types.hpp VERBATIM)
     target_sources(batchfit PRIVATE src/metal/backend.cpp src/metal/completion_bridge.mm)
     target_include_directories(batchfit SYSTEM PRIVATE "${metal_cpp_SOURCE_DIR}")
@@ -77,6 +77,10 @@ if(BATCHFIT_BUILD_TESTS)
     add_executable(batchfit_solver_check tests/solver_check.cpp)
     target_link_libraries(batchfit_solver_check PRIVATE batchfit::batchfit)
     add_test(NAME solver_check COMMAND batchfit_solver_check)
+    add_executable(batchfit_numerics_check tests/numerics_check.cpp)
+    target_link_libraries(batchfit_numerics_check PRIVATE batchfit::batchfit)
+    add_test(NAME numerics_check COMMAND batchfit_numerics_check)
+    set_tests_properties(numerics_check PROPERTIES PROCESSORS 2 TIMEOUT 240)
     add_executable(batchfit_initial_guess_check tests/initial_guess_check.cpp)
     target_link_libraries(batchfit_initial_guess_check PRIVATE batchfit::batchfit)
     add_test(NAME initial_guess_check COMMAND batchfit_initial_guess_check)
@@ -133,7 +137,7 @@ if(BATCHFIT_BUILD_TESTS)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
     add_executable(batchfit_tests tests/backend_test.cpp tests/models_test.cpp tests/synthetic_test.cpp
-        tests/solver_test.cpp tests/initial_guess_test.cpp tests/batch_test.cpp)
+        tests/solver_test.cpp tests/initial_guess_test.cpp tests/batch_test.cpp tests/numerics_test.cpp)
     target_include_directories(batchfit_tests PRIVATE src)
     target_link_libraries(batchfit_tests PRIVATE batchfit::batchfit GTest::gtest_main)
     if(BATCHFIT_METAL)
@@ -167,6 +171,10 @@ if(BATCHFIT_BUILD_BENCHMARKS)
         add_executable(batchfit_pipeline_baseline bench/pipeline_baseline.cpp)
         target_include_directories(batchfit_pipeline_baseline PRIVATE src/metal tests)
         target_link_libraries(batchfit_pipeline_baseline PRIVATE batchfit::batchfit)
+        add_executable(batchfit_numerics_study bench/numerics_study.mm)
+        target_compile_options(batchfit_numerics_study PRIVATE -fobjc-arc)
+        set_target_properties(batchfit_numerics_study PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
+        target_link_libraries(batchfit_numerics_study PRIVATE batchfit::batchfit "${METAL_FRAMEWORK}" "${FOUNDATION_FRAMEWORK}")
         enable_language(OBJCXX)
         add_executable(batchfit_metal_profile bench/metal_profile.mm
             "${PROJECT_BINARY_DIR}/generated/profile_source.hpp")

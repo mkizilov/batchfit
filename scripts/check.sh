@@ -31,5 +31,6 @@ if [ "$(uname -s)" = Darwin ]; then
     build/metal/batchfit_pipeline_baseline --smoke
     build/metal/batchfit_pipeline_baseline --smoke --float32
     python3 tools/check_pipeline.py build/metal/batchfit_fit_npy
+    python3 tools/check_numerics.py build/metal/batchfit_numerics_study
 fi
 echo 'All checks pass: formatting, CPU tests, clang-tidy, benchmark smoke, and Metal tests on macOS.'

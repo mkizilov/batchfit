@@ -27,8 +27,28 @@ struct Runtime {
     NS::SharedPtr<MTL::Device> device;
     NS::SharedPtr<MTL::CommandQueue> queue;
     NS::SharedPtr<MTL::Library> library;
-    std::array<NS::SharedPtr<MTL::ComputePipelineState>, 12> pipelines;
+    std::array<NS::SharedPtr<MTL::ComputePipelineState>, 48> pipelines;
     std::mutex mutex;
+    const NS::SharedPtr<MTL::ComputePipelineState> &pipeline(unsigned base, unsigned numerics) {
+        require(base < 12 && numerics < 4, "invalid numerical pipeline index");
+        auto &result = pipelines[base + 12 * numerics];
+        if (result.get() == nullptr) {
+            const auto constants = NS::TransferPtr(MTL::FunctionConstantValues::alloc()->init());
+            require(constants.get() != nullptr, "allocate numerical function constants");
+            constants->setConstantValue(&numerics, MTL::DataTypeUInt, NS::UInteger(0));
+            NS::Error *error = nullptr;
+            const auto function = NS::TransferPtr(library->newFunction(
+                NS::String::string(variant_kernel_names[base], NS::UTF8StringEncoding),
+                constants.get(), &error));
+            const auto context =
+                std::string(variant_kernel_names[base]) + " numerics=" + std::to_string(numerics);
+            require(function.get() != nullptr, "specialize " + context, error);
+            error = nullptr;
+            result = NS::TransferPtr(device->newComputePipelineState(function.get(), &error));
+            require(result.get() != nullptr, "create pipeline " + context, error);
+        }
+        return result;
+    }
 };
 struct Resources {
     std::shared_ptr<Runtime> runtime;
@@ -44,7 +64,10 @@ struct AsyncResources {
 #include "capture_cpp.hpp"
 namespace batchfit::metal {
 
-Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
+Context::Context() : Context(MathMode::Safe) {}
+Context::Context(MathMode mode) : runtime_(std::make_shared<detail::Runtime>()) {
+    if (mode != MathMode::Safe && mode != MathMode::Fast)
+        throw std::invalid_argument("unknown Metal math mode");
     detail::prepare_capture_environment();
     const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
     runtime_->device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
@@ -55,25 +78,18 @@ Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
     detail::require(options.get() != nullptr, "allocate compile options");
     detail::require(NS::ProcessInfo::processInfo()->operatingSystemVersion().majorVersion >= 15,
                     "safe/precise Metal LM requires macOS 15 or newer");
-    options->setMathMode(MTL::MathModeSafe);
-    options->setMathFloatingPointFunctions(MTL::MathFloatingPointFunctionsPrecise);
+    options->setMathMode(mode == MathMode::Safe ? MTL::MathModeSafe : MTL::MathModeFast);
+    options->setMathFloatingPointFunctions(mode == MathMode::Safe
+                                               ? MTL::MathFloatingPointFunctionsPrecise
+                                               : MTL::MathFloatingPointFunctionsFast);
     NS::Error *error = nullptr;
     runtime_->library = NS::TransferPtr(runtime_->device->newLibrary(
         NS::String::string(detail::shader_source, NS::UTF8StringEncoding), options.get(), &error));
     detail::require(runtime_->library.get() != nullptr,
                     "compile src/metal/lm.metal and embedded shared headers (#line preserved)",
                     error);
-    for (unsigned k = 0; k < 12; ++k) {
-        const auto function = NS::TransferPtr(runtime_->library->newFunction(
-            NS::String::string(detail::variant_kernel_names[k], NS::UTF8StringEncoding)));
-        detail::require(function.get() != nullptr,
-                        std::string("find kernel ") + detail::variant_kernel_names[k]);
-        error = nullptr;
-        runtime_->pipelines[k] =
-            NS::TransferPtr(runtime_->device->newComputePipelineState(function.get(), &error));
-        detail::require(runtime_->pipelines[k].get() != nullptr,
-                        std::string("create pipeline ") + detail::variant_kernel_names[k], error);
-    }
+    for (unsigned k = 0; k < 12; ++k)
+        runtime_->pipeline(k, 0);
 }
 
 SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p) const {
@@ -113,7 +129,7 @@ PendingBatch detail::submit_gpu(const std::shared_ptr<Storage> &storage, unsigne
         runtime.pipelines[kernel + 4]->threadExecutionWidth() != 32)
         variant = KernelVariant::ThreadPerFit;
     const auto selected = pipeline_index(kernel, storage->points, variant);
-    const auto &pipeline = runtime.pipelines.at(selected);
+    const auto &pipeline = runtime.pipeline(selected, storage->config->numerics);
     const auto width = pipeline->threadExecutionWidth(),
                maximum = pipeline->maxTotalThreadsPerThreadgroup();
     require(width > 0 && maximum >= width, "async pipeline thread limits");
@@ -207,7 +223,7 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel, KernelVariant variant
         runtime.pipelines[kernel + 4]->threadExecutionWidth() != 32)
         variant = KernelVariant::ThreadPerFit;
     const auto selected = pipeline_index(kernel, storage.points, variant);
-    const auto &pipeline = runtime.pipelines.at(selected);
+    const auto &pipeline = runtime.pipeline(selected, storage.config->numerics);
     const auto width = pipeline->threadExecutionWidth();
     const auto maximum = pipeline->maxTotalThreadsPerThreadgroup();
     require(width > 0 && maximum >= width,
@@ -259,6 +275,7 @@ Context::Context() {
     throw std::runtime_error(
         "batchfit was built without BATCHFIT_METAL; Device::Metal is unavailable");
 }
+Context::Context(MathMode) : Context() {}
 DeviceLimits Context::limits() const { throw std::runtime_error("Device::Metal is unavailable"); }
 SharedBatch Context::allocate(std::size_t, std::size_t, unsigned) const {
     throw std::runtime_error("Device::Metal is unavailable");

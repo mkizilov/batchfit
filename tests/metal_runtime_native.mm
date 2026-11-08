@@ -56,12 +56,18 @@ Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
                            error:&error];
         detail::require(runtime_->library != nil,
                         "compile src/metal/lm.metal with #line shared headers", error);
+        MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
+        detail::require(constants != nil, "allocate default numerical function constants");
+        const unsigned numerics = 0;
+        [constants setConstantValue:&numerics type:MTLDataTypeUInt atIndex:0];
         for (unsigned k = 0; k < 12; ++k) {
+            error = nil;
             id<MTLFunction> function = [runtime_->library
-                newFunctionWithName:[NSString
-                                        stringWithUTF8String:detail::variant_kernel_names[k]]];
+                newFunctionWithName:[NSString stringWithUTF8String:detail::variant_kernel_names[k]]
+                     constantValues:constants
+                              error:&error];
             detail::require(function != nil,
-                            std::string("find ") + detail::variant_kernel_names[k]);
+                            std::string("specialize ") + detail::variant_kernel_names[k], error);
             error = nil;
             runtime_->pipelines[k] = [runtime_->device newComputePipelineStateWithFunction:function
                                                                                      error:&error];
@@ -94,6 +100,8 @@ SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p) const {
 }
 
 Timings detail::run_gpu(Storage &storage, unsigned kernel, KernelVariant variant) {
+    require(storage.config->numerics == 0, "test-only SDK adapter supports standard numerics; use "
+                                           "production metal-cpp for numerical options");
     const auto start = std::chrono::steady_clock::now();
     const auto resources = std::static_pointer_cast<Resources>(storage.resources);
     auto &runtime = *resources->runtime;

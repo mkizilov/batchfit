@@ -1,4 +1,5 @@
 #pragma once
+#include <batchfit/coordinates.hpp>
 
 #include <batchfit/cpu/batch.hpp>
 #include <batchfit/cpu/initial_guess.hpp>

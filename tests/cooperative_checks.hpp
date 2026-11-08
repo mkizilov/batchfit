@@ -106,7 +106,7 @@ inline void failures(batchfit::metal::Context &context) {
 }
 inline void all() {
     const unsigned sizes[8] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
-    const unsigned expected[4][8] = {{1, 1, 1, 1, 2, 2, 3, 3},
+    const unsigned expected[4][8] = {{1, 1, 1, 1, 1, 2, 3, 3},
                                      {1, 1, 1, 1, 2, 2, 3, 3},
                                      {1, 1, 1, 1, 1, 2, 1, 3},
                                      {1, 1, 1, 1, 2, 2, 2, 3}};

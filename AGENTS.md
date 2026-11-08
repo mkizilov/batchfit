@@ -100,6 +100,16 @@ Extend this file with the project's language-specific architecture and verificat
 - Pipeline phase JSON is application/Mach plus command-buffer instrumentation,
   **not Metal System Trace**. Keep unavailable xctrace and I/O/cache limitations
   explicit. Run large dense-file benchmarks only in Release, not the ordinary gate.
+- Numerical remedies are explicit: `Coordinates` prepares original double inputs
+  before float conversion; paired baseline centering changes constraint geometry.
+  Never silently transform physical b/slope boxes or claim recovery of lost bits.
+- Preserve opt-in Kahan/scaled-Cholesky flags, exact diagonal damping and accepted
+  state. MSL function constants specialize option sets; lazy PSO caches remain
+  protected by the runtime mutex. Disabled remedies must not reserve workspace.
+- Safe/precise remains default. Fast libraries are experimental; preserve bitwise
+  nonfinite guards, degenerate/unresolved statuses and NUMERICS.md's actual error
+  tables. The full study keeps failed denominators and compares every kernel to
+  CPU64. Gaussian's current v1/SIMD threshold is 1024, not the archived turn-9 512.
 
 ## Setup and verification
 
@@ -128,6 +138,8 @@ The gate also runs window mapping, pipeline CPU parity/error-draining tests,
 `batchfit_pipeline_baseline --smoke` and independent stdlib `tools/check_pipeline.py`
 CLI/typed-NPY checks. The full ~10 GB benchmark command and cleanup are documented
 in BENCHMARKS.md; it is never an implicit CTest workload.
+Numerical CPU/GPU pathology tests and `tools/check_numerics.py` smoke also run;
+the explicit full Release study and 2e-4 retained-recipe gate are in NUMERICS.md.
 
 Use `clang-format -i <files>` for maintained C++/Metal files; `.clang-format` is
 authoritative. `clang-tidy` uses `.clang-tidy` plus each build's compile database.

@@ -6,10 +6,12 @@
 #include <cstdint>
 
 namespace batchfit::metal::detail {
-static_assert(sizeof(Config) == 92 && sizeof(float) == 4 && sizeof(unsigned) == 4 &&
+static_assert(sizeof(Config) == 108 && sizeof(float) == 4 && sizeof(unsigned) == 4 &&
               sizeof(FitStatus) == 4);
 static_assert(unsigned(FitStatus::converged) == 0 && unsigned(FitStatus::max_iterations) == 1 &&
               unsigned(FitStatus::singular_matrix) == 2 && unsigned(FitStatus::invalid_input) == 3);
+static_assert(unsigned(FitStatus::degenerate_data) == 4 &&
+              unsigned(FitStatus::unresolved_peak) == 5);
 
 inline std::array<std::size_t, 8> buffer_counts(std::size_t n, std::size_t m, unsigned p) {
     constexpr auto limit = std::numeric_limits<std::uint32_t>::max();

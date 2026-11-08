@@ -49,12 +49,17 @@ template <typename T, template <typename> class Model> void check() {
         options.lower[3] = T(0);
         options.upper[3] = T(1);
     }
-    allocations = 0;
-    tracking = true;
-    const auto result = batchfit::cpu::fit_single<T, Model>(x, y, initial, options);
-    tracking = false;
-    if (allocations != 0 || result.status != batchfit::FitStatus::converged)
-        throw std::runtime_error("solver allocated or failed during allocation instrumentation");
+    for (unsigned flags = 0; flags < 4; ++flags) {
+        options.compensated_sum = (flags & 1U) != 0;
+        options.scaled_cholesky = (flags & 2U) != 0;
+        allocations = 0;
+        tracking = true;
+        const auto result = batchfit::cpu::fit_single<T, Model>(x, y, initial, options);
+        tracking = false;
+        if (allocations != 0 || result.status != batchfit::FitStatus::converged)
+            throw std::runtime_error(
+                "solver allocated or failed during allocation instrumentation");
+    }
 }
 
 int main() {
@@ -67,5 +72,6 @@ int main() {
     check<double, Lorentzian>();
     check<double, PseudoVoigt>();
     check<double, TwoLorentzian>();
-    std::cout << "All 8 model/scalar fits converged with zero C++ heap allocations\n";
+    std::cout
+        << "All 32 model/scalar/numerical-option fits converged with zero C++ heap allocations\n";
 }

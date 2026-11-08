@@ -15,6 +15,7 @@ enum class Device { Cpu, Metal };
 namespace metal {
 class PendingBatch;
 enum class KernelVariant { Automatic, ThreadPerFit, SimdPerFit, ThreadgroupPerFit };
+enum class MathMode { Safe, Fast };
 inline KernelVariant dispatch_variant(unsigned model, std::size_t points) {
     if (model >= 4)
         throw std::invalid_argument("unknown Metal model");
@@ -24,7 +25,7 @@ inline KernelVariant dispatch_variant(unsigned model, std::size_t points) {
     switch (model) {
     case 0:
     case 1:
-        if (points < 512)
+        if (points < (model == 0 ? 1024U : 512U))
             return KernelVariant::ThreadPerFit;
         if (points < 2048)
             return KernelVariant::SimdPerFit;
@@ -149,6 +150,7 @@ struct detail::Access {
 class Context {
   public:
     Context();
+    explicit Context(MathMode mode);
     DeviceLimits limits() const;
     template <template <typename> class Model>
     SharedBatch make_batch(std::size_t n, std::size_t m) const {
@@ -214,6 +216,16 @@ void configure(Storage &data,
     config.gradient_tolerance = options.gradient_tolerance;
     config.step_tolerance = options.step_tolerance;
     config.cost_tolerance = options.cost_tolerance;
+    config.numerics = (options.compensated_sum ? 1U : 0U) | (options.scaled_cholesky ? 2U : 0U);
+    if (data.fits > 0) {
+        config.minimum_spacing = cpu::detail::grid_spacing<float>(data.x);
+        config.varied_x = std::any_of(data.x.begin(), data.x.end(),
+                                      [&](float value) { return value != data.x[0]; });
+    }
+    config.width_factor = std::is_same_v<Model<float>, models::Gaussian<float>>
+                              ? 2.354820045030949382F
+                          : std::is_same_v<Model<float>, models::PseudoVoigt<float>> ? 1.F
+                                                                                     : 2.F;
     for (unsigned k = 0; k < p; ++k) {
         config.lower[k] = options.lower[k];
         config.upper[k] = options.upper[k];

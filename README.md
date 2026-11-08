@@ -44,7 +44,8 @@ is hidden in this API.
 Bounds default to unbounded. Initial and trial parameters are clamped; equal
 finite bounds fix a coordinate. Set positive lower bounds for widths and [0,1]
 for pseudo-Voigt mixing. The solver reports `FitStatus::converged`,
-`max_iterations`, `singular_matrix` or `invalid_input`. A rejected/non-finite trial
+`max_iterations`, `singular_matrix` or `invalid_input`, plus spectral diagnostics
+`degenerate_data` and `unresolved_peak`. A rejected/non-finite trial
 never overwrites accepted parameters or chi-squared. The iteration count includes
 attempted systems, even rejected ones; zero-budget calls return initial cost.
 For exact damping, stopping/default-tolerance and failure semantics see
@@ -55,6 +56,36 @@ suite recovers 768 synthetic fits across every model/scalar/noise combination,
 with noise-scaled parameter tolerances and deliberate status failures. A separate
 global-new counter verifies zero C++ allocations across all eight model/scalar
 calls, not only the inner iteration loop.
+
+## Float32 numerical robustness
+
+[NUMERICS.md](NUMERICS.md) records the float64-reference study across models,
+signal-to-noise levels, coordinate/parameter ranges, kernels and safe/fast math.
+Normalize **original double inputs before converting to float32** with
+`batchfit::Coordinates::from(x_double,y_double)`. Use its `x()`, `y()` and
+`normalize<Model>()` transforms to prepare the existing CPU/shared-batch APIs;
+`physical<Model>()` reconstructs physical parameters in host double afterward.
+It cannot restore coordinates already rounded to float32. Constraints/tolerances
+must be specified in the fitted units; centered paired-baseline bounds can be
+coupled, so they are not silently converted as independent boxes.
+
+```cpp
+batchfit::cpu::SolverOptions<float, 3> accurate;
+accurate.compensated_sum = true;   // objective, J^T r and J^T J
+accurate.scaled_cholesky = true;   // equivalent diagonally equilibrated solve
+batchfit::metal::Context context;  // safe/precise math, as before
+// Prepare normalized x/y/initial values, then pass accurate to fit_single/fit_batch.
+```
+
+The retained safe normalized recipe had maximum unit-parameter error **1.51e-4**
+against float64 CPU across 122,880 GPU fit executions; raw poorly scaled cases
+reached **0.291** despite converged status. Defaults stay reproducible; both
+numerical flags are opt-in. `metal::Context(metal::MathMode::Fast)` is available
+for explicit experiments, not the strict-accuracy recommendation. Nonfinite
+shader guards use exponent bits and are tested in both compilation modes.
+Flat/zero spectra with free shape parameters now return `degenerate_data` (4),
+and converged sub-spacing FWHM fits return `unresolved_peak` (5). Edge peaks are
+not automatically rejected. See NUMERICS.md for exact diagnostic conditions.
 
 ## Batched CPU fitting
 
@@ -184,6 +215,10 @@ errors. The final automatic policy selected the exact fastest forced median in
 29/32 cells and was within 4.01% in the three near-ties. This is a calibrated
 large-batch, point-major M4 policy, not universal tuning for small N or other GPUs.
 
+Turn 11's numerical guards shift Gaussian M=512 to v1 (SIMD starts at 1024).
+All other buckets remain unchanged. The new 128-row matrix passes the same 5%
+performance gate; the turn-9 table above remains historical. See NUMERICS.md.
+
 ## Out-of-core NPY fitting and three-slot pipelining
 
 `metal::fit_npy<Model>` maps **windows**, never the complete observation file.
@@ -233,7 +268,8 @@ build/metal/batchfit_fit_npy --model gaussian --x data/x.npy --y data/y.npy \
 
 The new output directory contains float32 `parameters.npy` / `chi_squared.npy`
 and uint32 `status.npy` / `iterations.npy`. Status codes are 0 converged, 1 max
-iterations, 2 singular matrix, 3 invalid input. Existing output/timeline paths
+iterations, 2 singular matrix, 3 invalid input, 4 degenerate data, 5 unresolved
+peak. Existing output/timeline paths
 are refused; owned partial output is rolled back on failure. API consumers can
 stream results elsewhere without allocating full-N output arrays. `submit_batch`
 also exposes the asynchronous primitive directly: retain its `PendingBatch`,

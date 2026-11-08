@@ -1,9 +1,9 @@
 // Cooperative variants retain v1's control policy, but reduce point sums in parallel.
-enum : uint { coop_running = 4 };
+enum : uint { coop_running = 6 };
 template <uint P> struct CooperativeState {
     float parameters[P], matrix[P][P], damped[P][P], gradient[P], delta[P], trial[P];
-    float chi, lambda, predicted;
-    uint status, iterations, finite_trial;
+    float chi, lambda, predicted, spacing, width_factor;
+    uint status, iterations, finite_trial, flat;
 };
 
 template <bool WholeGroup> void cooperative_barrier() {
@@ -31,14 +31,46 @@ float cooperative_sum(float value, threadgroup float *sums, uint lane, uint simd
     return sums[0];
 }
 
+template <bool WholeGroup>
+uint cooperative_flags(uint value, threadgroup float *sums, uint lane, uint simd, uint groups) {
+    const uint warp = simd_or(value);
+    if (!WholeGroup)
+        return warp;
+    if (lane == 0)
+        sums[simd] = float(warp);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd == 0 && lane == 0) {
+        uint total = 0;
+        for (uint i = 0; i < groups; ++i)
+            total |= uint(sums[i]);
+        sums[0] = float(total);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return uint(sums[0]);
+}
+
 template <uint P>
-bool cooperative_cholesky(threadgroup float matrix[P][P], threadgroup float rhs[P]) {
+bool cooperative_cholesky(threadgroup float matrix[P][P], threadgroup float rhs[P],
+                          bool scaled = false) {
+    float scale[P];
+    if (scaled) {
+        for (uint i = 0; i < P; ++i) {
+            if (!finite_value(matrix[i][i]) || matrix[i][i] <= 0)
+                return false;
+            scale[i] = sqrt(matrix[i][i]);
+        }
+        for (uint i = 0; i < P; ++i) {
+            rhs[i] /= scale[i];
+            for (uint j = 0; j < P; ++j)
+                matrix[i][j] = (matrix[i][j] / scale[i]) / scale[j];
+        }
+    }
     for (uint i = 0; i < P; ++i) {
         for (uint j = 0; j <= i; ++j) {
             float value = matrix[i][j];
             for (uint k = 0; k < j; ++k)
                 value -= matrix[i][k] * matrix[j][k];
-            if (!isfinite(value) || (i == j && value <= 0))
+            if (!finite_value(value) || (i == j && value <= 0))
                 return false;
             matrix[i][j] = i == j ? sqrt(value) : value / matrix[j][j];
         }
@@ -52,9 +84,15 @@ bool cooperative_cholesky(threadgroup float matrix[P][P], threadgroup float rhs[
         for (uint j = i + 1; j < P; ++j)
             value -= matrix[j][i] * rhs[j];
         rhs[i] = value / matrix[i][i];
-        if (!isfinite(rhs[i]))
+        if (!finite_value(rhs[i]))
             return false;
     }
+    if (scaled)
+        for (uint i = 0; i < P; ++i) {
+            rhs[i] /= scale[i];
+            if (!finite_value(rhs[i]))
+                return false;
+        }
     return true;
 }
 
@@ -64,17 +102,24 @@ void cooperative_initialize(threadgroup CooperativeState<P> &state, device const
     state.status = invalid_input;
     state.iterations = 0;
     state.chi = NAN;
+    state.spacing = cfg.minimum_spacing;
+    state.width_factor = cfg.width_factor;
+    state.flat = 0;
     for (uint k = 0; k < P; ++k)
         state.parameters[k] = initial[fit * P + k];
-    if (!isfinite(cfg.initial_lambda) || cfg.initial_lambda <= 0)
+    if (cfg.numerics != numerical_mode)
+        return;
+    if (!finite_value(cfg.initial_lambda) || cfg.initial_lambda <= 0)
         return;
     const float tolerances[3] = {cfg.gradient_tolerance, cfg.step_tolerance, cfg.cost_tolerance};
     for (uint k = 0; k < 3; ++k)
-        if (!isfinite(tolerances[k]) || tolerances[k] < 0)
+        if (!finite_value(tolerances[k]) || tolerances[k] < 0)
             return;
     for (uint k = 0; k < P; ++k)
-        if (!isfinite(state.parameters[k]) || isnan(cfg.lower[k]) || isnan(cfg.upper[k]) ||
-            cfg.lower[k] > cfg.upper[k] || cfg.lower[k] == INFINITY || cfg.upper[k] == -INFINITY)
+        if (!finite_value(state.parameters[k]) || nan_value(cfg.lower[k]) ||
+            nan_value(cfg.upper[k]) || cfg.lower[k] > cfg.upper[k] ||
+            as_type<uint>(cfg.lower[k]) == 0x7f800000u ||
+            as_type<uint>(cfg.upper[k]) == 0xff800000u)
             return;
     // Projection occurs after shared-data validation, as in the CPU reference.
     state.lambda = cfg.initial_lambda;
@@ -85,12 +130,12 @@ template <uint P>
 void cooperative_step(threadgroup CooperativeState<P> &state, constant Config &cfg,
                       uint iteration) {
     for (uint k = 0; k < P; ++k) {
-        if (!isfinite(state.gradient[k])) {
+        if (!finite_value(state.gradient[k])) {
             state.status = invalid_input;
             return;
         }
         for (uint l = 0; l <= k; ++l) {
-            if (!isfinite(state.matrix[k][l])) {
+            if (!finite_value(state.matrix[k][l])) {
                 state.status = invalid_input;
                 return;
             }
@@ -119,7 +164,7 @@ void cooperative_step(threadgroup CooperativeState<P> &state, constant Config &c
             state.damped[k][k] += state.lambda * state.matrix[k][k];
     }
     state.iterations = iteration + 1;
-    if (!cooperative_cholesky<P>(state.damped, state.delta)) {
+    if (!cooperative_cholesky<P>(state.damped, state.delta, (numerical_mode & 2u) != 0)) {
         state.status = singular_matrix;
         return;
     }
@@ -129,7 +174,7 @@ void cooperative_step(threadgroup CooperativeState<P> &state, constant Config &c
         step_norm = max(step_norm, abs(state.delta[k]));
         parameter_norm = max(parameter_norm, abs(state.parameters[k]));
         state.trial[k] = clamp(state.parameters[k] + state.delta[k], cfg.lower[k], cfg.upper[k]);
-        state.finite_trial = state.finite_trial && isfinite(state.trial[k]);
+        state.finite_trial = state.finite_trial && finite_value(state.trial[k]);
     }
     if (step_norm <=
         cfg.step_tolerance * (parameter_norm + cfg.step_tolerance) / max(1.0f, state.lambda)) {
@@ -149,12 +194,13 @@ template <uint P>
 void cooperative_accept(threadgroup CooperativeState<P> &state, constant Config &cfg,
                         float trial_cost) {
     const float reduction = state.chi - trial_cost, threshold = cfg.cost_tolerance * state.chi;
-    const bool small = isfinite(trial_cost) && isfinite(state.predicted) && state.predicted >= 0 &&
-                       abs(reduction) <= threshold &&
+    const bool small = finite_value(trial_cost) && finite_value(state.predicted) &&
+                       state.predicted >= 0 && abs(reduction) <= threshold &&
                        state.predicted <= threshold / max(1.0f, state.lambda);
     constexpr float epsilon = 0x1p-23f;
     const float maximum = max(cfg.initial_lambda, 1.0f / epsilon);
-    if (isfinite(trial_cost) && reduction > 0 && isfinite(state.predicted) && state.predicted > 0) {
+    if (finite_value(trial_cost) && reduction > 0 && finite_value(state.predicted) &&
+        state.predicted > 0) {
         for (uint k = 0; k < P; ++k)
             state.parameters[k] = state.trial[k];
         state.chi = trial_cost;
@@ -175,7 +221,10 @@ void cooperative_store(threadgroup CooperativeState<P> &state, device float *par
                        device uint *status, device uint *iterations, device float *chi, uint fit) {
     for (uint k = 0; k < P; ++k)
         parameters[fit * P + k] = state.parameters[k];
-    status[fit] = state.status;
+    status[fit] = state.status == converged
+                      ? resolved_status(state.parameters[2], state.parameters[min(P - 1, 5u)], P,
+                                        state.spacing, state.width_factor)
+                      : state.status;
     iterations[fit] = state.iterations;
     chi[fit] = state.chi;
 }
@@ -203,17 +252,22 @@ void cooperative_run(device const float *x, device const float *y, device const 
             cooperative_store<P>(state, parameters, status, iterations, chi, fit);
         return;
     }
-    float invalid = 0;
-    for (uint j = point_lane; j < cfg.points; j += stride)
-        if (!isfinite(x[j]) || !isfinite(y[j * cfg.fits + fit]))
-            invalid = 1;
-    invalid = cooperative_sum<WholeGroup>(invalid, sums, lane, simd, groups);
+    uint input_flags = 0;
+    for (uint j = point_lane; j < cfg.points; j += stride) {
+        if (!finite_value(x[j]) || !finite_value(y[j * cfg.fits + fit]))
+            input_flags |= 1u;
+        if (y[j * cfg.fits + fit] != y[fit])
+            input_flags |= 2u;
+    }
+    input_flags = cooperative_flags<WholeGroup>(input_flags, sums, lane, simd, groups);
     if (leader) {
-        if (invalid > 0)
+        if (input_flags & 1u)
             state.status = invalid_input;
-        else
+        else {
+            state.flat = !(input_flags & 2u) && cfg.varied_x && free_shape<P>(cfg);
             for (uint k = 0; k < P; ++k)
                 state.parameters[k] = clamp(state.parameters[k], cfg.lower[k], cfg.upper[k]);
+        }
     }
     cooperative_barrier<WholeGroup>();
     if (state.status != coop_running) {
@@ -221,18 +275,23 @@ void cooperative_run(device const float *x, device const float *y, device const 
             cooperative_store<P>(state, parameters, status, iterations, chi, fit);
         return;
     }
-    float params[P], local_cost = 0;
+    float params[P], local_cost = 0, cost_correction = 0;
     for (uint k = 0; k < P; ++k)
         params[k] = simd_broadcast(lane == 0 ? state.parameters[k] : 0.0f, 0);
     for (uint j = point_lane; j < cfg.points; j += stride) {
         const float r = y[j * cfg.fits + fit] - Model::eval(x[j], params);
-        local_cost += r * r;
+        if (numerical_mode & 1u)
+            batchfit::numerics::add(r * r, local_cost, cost_correction);
+        else
+            local_cost += r * r;
     }
     const float initial_cost = cooperative_sum<WholeGroup>(local_cost, sums, lane, simd, groups);
     if (leader) {
-        state.chi = isfinite(initial_cost) ? initial_cost : NAN;
-        if (!isfinite(initial_cost))
+        state.chi = finite_value(initial_cost) ? initial_cost : NAN;
+        if (!finite_value(initial_cost))
             state.status = invalid_input;
+        else if (state.flat)
+            state.status = degenerate_data;
         else if (cfg.max_iterations == 0)
             state.status = max_iterations;
     }
@@ -245,17 +304,28 @@ void cooperative_run(device const float *x, device const float *y, device const 
     for (uint iteration = 0; iteration < cfg.max_iterations; ++iteration) {
         for (uint k = 0; k < P; ++k)
             params[k] = simd_broadcast(lane == 0 ? state.parameters[k] : 0.0f, 0);
-        float partial[terms];
-        for (uint q = 0; q < terms; ++q)
+        float partial[terms], corrections[terms];
+        for (uint q = 0; q < terms; ++q) {
             partial[q] = 0;
+            corrections[q] = 0;
+        }
         for (uint j = point_lane; j < cfg.points; j += stride) {
             const float residual = y[j * cfg.fits + fit] - Model::eval(x[j], params);
             float jacobian[P];
             Model::jacobian(x[j], params, jacobian);
             for (uint k = 0; k < P; ++k) {
-                partial[triangle + k] += jacobian[k] * residual;
+                if (numerical_mode & 1u)
+                    batchfit::numerics::add(jacobian[k] * residual, partial[triangle + k],
+                                            corrections[triangle + k]);
+                else
+                    partial[triangle + k] += jacobian[k] * residual;
                 for (uint l = 0; l <= k; ++l)
-                    partial[k * (k + 1) / 2 + l] += jacobian[k] * jacobian[l];
+                    if (numerical_mode & 1u)
+                        batchfit::numerics::add(jacobian[k] * jacobian[l],
+                                                partial[k * (k + 1) / 2 + l],
+                                                corrections[k * (k + 1) / 2 + l]);
+                    else
+                        partial[k * (k + 1) / 2 + l] += jacobian[k] * jacobian[l];
             }
         }
         for (uint q = 0; q < terms; ++q) {
@@ -291,10 +361,14 @@ void cooperative_run(device const float *x, device const float *y, device const 
             trial[k] = clamp(params[k] + step, cfg.lower[k], cfg.upper[k]);
         }
         local_cost = 0;
+        cost_correction = 0;
         if (state.finite_trial)
             for (uint j = point_lane; j < cfg.points; j += stride) {
                 const float residual = y[j * cfg.fits + fit] - Model::eval(x[j], trial);
-                local_cost += residual * residual;
+                if (numerical_mode & 1u)
+                    batchfit::numerics::add(residual * residual, local_cost, cost_correction);
+                else
+                    local_cost += residual * residual;
             }
         const float trial_cost = cooperative_sum<WholeGroup>(state.finite_trial ? local_cost : NAN,
                                                              sums, lane, simd, groups);

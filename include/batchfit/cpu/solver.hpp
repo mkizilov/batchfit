@@ -1,5 +1,8 @@
 #pragma once
 
+#include <batchfit/models.hpp>
+#include <batchfit/numerics.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -10,7 +13,14 @@
 #include <type_traits>
 
 namespace batchfit {
-enum class FitStatus { converged, max_iterations, singular_matrix, invalid_input };
+enum class FitStatus {
+    converged,
+    max_iterations,
+    singular_matrix,
+    invalid_input,
+    degenerate_data,
+    unresolved_peak
+};
 
 namespace cpu {
 template <typename T, std::size_t P> struct SolverOptions {
@@ -19,6 +29,8 @@ template <typename T, std::size_t P> struct SolverOptions {
     T gradient_tolerance = std::is_same_v<T, float> ? T(1e-5) : T(1e-10);
     T step_tolerance = std::is_same_v<T, float> ? T(1e-6) : T(1e-10);
     T cost_tolerance = std::is_same_v<T, float> ? T(1e-6) : T(1e-12);
+    bool compensated_sum = false;
+    bool scaled_cholesky = false;
     std::array<T, P> lower;
     std::array<T, P> upper;
 
@@ -38,9 +50,67 @@ template <typename T, std::size_t P> struct FitResult {
 namespace detail {
 template <typename T, std::size_t P> using Matrix = std::array<std::array<T, P>, P>;
 
+template <typename T, typename Model>
+inline constexpr bool spectral_model =
+    std::is_same_v<Model, models::Gaussian<T>> || std::is_same_v<Model, models::Lorentzian<T>> ||
+    std::is_same_v<Model, models::PseudoVoigt<T>> ||
+    std::is_same_v<Model, models::TwoLorentzian<T>>;
+template <typename T> T grid_spacing(std::span<const T> x) {
+    T spacing = std::numeric_limits<T>::infinity();
+    bool up = true, down = true;
+    for (std::size_t j = 1; j < x.size(); ++j) {
+        const T difference = x[j] - x[j - 1];
+        up = up && difference >= T(0);
+        down = down && difference <= T(0);
+        if (difference != T(0))
+            spacing = std::min(spacing, std::abs(difference));
+    }
+    return (up || down) && std::isfinite(spacing) ? spacing : T(0);
+}
+template <typename T, typename Model>
+bool free_shape(const SolverOptions<T, Model::parameter_count> &options) {
+    if constexpr (spectral_model<T, Model>) {
+        bool free = options.lower[1] != options.upper[1] || options.lower[2] != options.upper[2];
+        if constexpr (Model::parameter_count == 4)
+            free = free || options.lower[3] != options.upper[3];
+        if constexpr (Model::parameter_count == 8)
+            free = free || options.lower[4] != options.upper[4] ||
+                   options.lower[5] != options.upper[5];
+        return free;
+    } else
+        return false;
+}
+template <typename T, typename Model>
+FitStatus spectral_success(const std::array<T, Model::parameter_count> &parameters, T spacing) {
+    if constexpr (spectral_model<T, Model>) {
+        const T factor = std::is_same_v<Model, models::Gaussian<T>>      ? T(2.354820045030949382)
+                         : std::is_same_v<Model, models::PseudoVoigt<T>> ? T(1)
+                                                                         : T(2);
+        if (spacing > T(0) && std::abs(parameters[2]) * factor < spacing)
+            return FitStatus::unresolved_peak;
+        if constexpr (Model::parameter_count == 8)
+            if (spacing > T(0) && std::abs(parameters[5]) * factor < spacing)
+                return FitStatus::unresolved_peak;
+    }
+    return FitStatus::converged;
+}
+
 // The lower triangle becomes the Cholesky factor; rhs becomes the solution.
 template <typename T, std::size_t P>
-bool cholesky_solve(Matrix<T, P> &matrix, std::array<T, P> &rhs) {
+bool cholesky_solve(Matrix<T, P> &matrix, std::array<T, P> &rhs, bool scaled = false) {
+    std::array<T, P> scale;
+    if (scaled) {
+        for (unsigned i = 0; i < P; ++i) {
+            if (!std::isfinite(matrix[i][i]) || matrix[i][i] <= T(0))
+                return false;
+            scale[i] = std::sqrt(matrix[i][i]);
+        }
+        for (unsigned i = 0; i < P; ++i) {
+            rhs[i] /= scale[i];
+            for (unsigned j = 0; j < P; ++j)
+                matrix[i][j] = (matrix[i][j] / scale[i]) / scale[j];
+        }
+    }
     for (unsigned i = 0; i < P; ++i) {
         for (unsigned j = 0; j <= i; ++j) {
             T value = matrix[i][j];
@@ -63,32 +133,50 @@ bool cholesky_solve(Matrix<T, P> &matrix, std::array<T, P> &rhs) {
         if (!std::isfinite(rhs[i]))
             return false;
     }
+    if (scaled)
+        for (unsigned i = 0; i < P; ++i) {
+            rhs[i] /= scale[i];
+            if (!std::isfinite(rhs[i]))
+                return false;
+        }
     return true;
 }
 
 template <typename T, typename Model, std::size_t P>
-T cost(std::span<const T> x, std::span<const T> y, const std::array<T, P> &params) {
-    T value = 0;
+T cost(std::span<const T> x, std::span<const T> y, const std::array<T, P> &params,
+       bool compensated = false) {
+    T value = 0, correction = 0;
     for (std::size_t j = 0; j < x.size(); ++j) {
         const T residual = y[j] - Model::eval(x[j], params.data());
-        value += residual * residual;
+        if (compensated)
+            numerics::add(residual * residual, value, correction);
+        else
+            value += residual * residual;
     }
     return value;
 }
 
 template <typename T, typename Model, std::size_t P>
 bool linearize(std::span<const T> x, std::span<const T> y, const std::array<T, P> &params,
-               Matrix<T, P> &matrix, std::array<T, P> &gradient) {
+               Matrix<T, P> &matrix, std::array<T, P> &gradient, bool compensated = false) {
     matrix = {};
     gradient.fill(T(0));
+    Matrix<T, P> matrix_correction{};
+    std::array<T, P> gradient_correction{};
     for (std::size_t j = 0; j < x.size(); ++j) {
         const T residual = y[j] - Model::eval(x[j], params.data());
         T jacobian[P];
         Model::jacobian(x[j], params.data(), jacobian);
         for (unsigned k = 0; k < P; ++k) {
-            gradient[k] += jacobian[k] * residual;
+            if (compensated)
+                numerics::add(jacobian[k] * residual, gradient[k], gradient_correction[k]);
+            else
+                gradient[k] += jacobian[k] * residual;
             for (unsigned l = 0; l <= k; ++l)
-                matrix[k][l] += jacobian[k] * jacobian[l];
+                if (compensated)
+                    numerics::add(jacobian[k] * jacobian[l], matrix[k][l], matrix_correction[k][l]);
+                else
+                    matrix[k][l] += jacobian[k] * jacobian[l];
         }
     }
     for (unsigned k = 0; k < P; ++k) {
@@ -139,11 +227,26 @@ fit_single(std::span<const T> x, std::span<const T> y, std::span<const T> initia
     for (unsigned k = 0; k < p; ++k) {
         result.parameters[k] = std::clamp(initial[k], options.lower[k], options.upper[k]);
     }
-    result.chi_squared = detail::cost<T, Model<T>>(x, y, result.parameters);
+    result.chi_squared =
+        detail::cost<T, Model<T>>(x, y, result.parameters, options.compensated_sum);
     if (!std::isfinite(result.chi_squared)) {
         result.chi_squared = std::numeric_limits<T>::quiet_NaN();
         return result;
     }
+    const T spacing = detail::grid_spacing<T>(x);
+    if constexpr (detail::spectral_model<T, Model<T>>) {
+        const bool varied_x =
+            std::any_of(x.begin(), x.end(), [&](T value) { return value != x[0]; });
+        const bool flat = std::all_of(y.begin(), y.end(), [&](T value) { return value == y[0]; });
+        if (varied_x && flat && detail::free_shape<T, Model<T>>(options)) {
+            result.status = FitStatus::degenerate_data;
+            return result;
+        }
+    }
+    const auto success = [&] {
+        result.status = detail::spectral_success<T, Model<T>>(result.parameters, spacing);
+        return result;
+    };
     result.status = FitStatus::max_iterations;
     T lambda = options.initial_lambda;
     const T maximum_lambda =
@@ -151,7 +254,8 @@ fit_single(std::span<const T> x, std::span<const T> y, std::span<const T> initia
     for (unsigned iteration = 0; iteration < options.max_iterations; ++iteration) {
         detail::Matrix<T, p> matrix;
         std::array<T, p> gradient;
-        if (!detail::linearize<T, Model<T>>(x, y, result.parameters, matrix, gradient)) {
+        if (!detail::linearize<T, Model<T>>(x, y, result.parameters, matrix, gradient,
+                                            options.compensated_sum)) {
             result.status = FitStatus::invalid_input;
             return result;
         }
@@ -166,8 +270,7 @@ fit_single(std::span<const T> x, std::span<const T> y, std::span<const T> initia
                 gradient_norm = std::max(gradient_norm, std::abs(gradient[k]));
         }
         if (gradient_norm <= options.gradient_tolerance) {
-            result.status = FitStatus::converged;
-            return result;
+            return success();
         }
         auto damped = matrix;
         auto delta = gradient;
@@ -182,7 +285,7 @@ fit_single(std::span<const T> x, std::span<const T> y, std::span<const T> initia
             }
         }
         result.iterations = iteration + 1;
-        if (!detail::cholesky_solve<T, p>(damped, delta)) {
+        if (!detail::cholesky_solve<T, p>(damped, delta, options.scaled_cholesky)) {
             result.status = FitStatus::singular_matrix;
             return result;
         }
@@ -200,16 +303,16 @@ fit_single(std::span<const T> x, std::span<const T> y, std::span<const T> initia
         // Remove damping's artificial shrinkage before declaring a small step.
         if (step_norm <= options.step_tolerance * (parameter_norm + options.step_tolerance) /
                              std::max(T(1), lambda)) {
-            result.status = FitStatus::converged;
-            return result;
+            return success();
         }
         for (unsigned k = 0; k < p; ++k) {
             predicted_reduction += T(2) * gradient[k] * delta[k];
             for (unsigned l = 0; l < p; ++l)
                 predicted_reduction -= delta[k] * matrix[k][l] * delta[l];
         }
-        const T trial_cost = finite_trial ? detail::cost<T, Model<T>>(x, y, trial)
-                                          : std::numeric_limits<T>::quiet_NaN();
+        const T trial_cost = finite_trial
+                                 ? detail::cost<T, Model<T>>(x, y, trial, options.compensated_sum)
+                                 : std::numeric_limits<T>::quiet_NaN();
         const T reduction = result.chi_squared - trial_cost;
         const T cost_threshold = options.cost_tolerance * result.chi_squared;
         const bool small_cost_change =
@@ -232,8 +335,7 @@ fit_single(std::span<const T> x, std::span<const T> y, std::span<const T> initia
             lambda = std::min(maximum_lambda, lambda * T(10));
         }
         if (small_cost_change) {
-            result.status = FitStatus::converged;
-            return result;
+            return success();
         }
     }
     return result;

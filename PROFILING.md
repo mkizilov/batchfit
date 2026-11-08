@@ -1,5 +1,10 @@
 # Metal profiling and out-of-core pipeline
 
+For the turn-11 float32/float64 error tables, safe/fast math and NaN probes,
+retained numerical recipes and default-pipeline specialization/performance check,
+see [NUMERICS.md](NUMERICS.md). Historical profiler/trace results below remain
+unchanged; numerical accuracy experiments are not occupancy/register measurements.
+
 ## Out-of-core pipeline (turn 10)
 
 The production metal-cpp pipeline emits streamed application phase events to

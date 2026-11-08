@@ -1,5 +1,12 @@
 # CPU baseline v1
 
+**Turn-11 numerical update:** NUMERICS.md and `profiling/numerics_results.csv`
+record the float64-reference remedy study. Function-constant-specialized default
+kernels retain the measured performance path; Gaussian M=512 now uses v1. The
+new full 128-row dispatch matrix in `profiling/numerics_dispatch_results.csv`
+passes unchanged numerical and 5% performance gates. Earlier baseline/turn-9
+tables below remain their original measurements, not relabeled current tuning.
+
 **Turn-9 verification update:** project-local prerequisites are now installed and
 the production metal-cpp, CMake, GoogleTest and Google Benchmark smoke targets
 compile/run. Earlier numbers below remain the originally recorded native-runner

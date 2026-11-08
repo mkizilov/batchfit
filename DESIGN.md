@@ -47,7 +47,7 @@ batch-wide crash. No fit may corrupt or suppress the status of another fit.
 | Field | Shape | Meaning |
 | --- | --- | --- |
 | parameters | N * P | Final accepted parameters in fit-major order |
-| status | N | converged, max_iterations, singular_matrix or invalid_input |
+| status | N | converged, max_iterations, singular_matrix, invalid_input, degenerate_data or unresolved_peak |
 | iterations | N | Number of attempted LM updates (zero before any update) |
 | chi_squared | N | Sum of squared residuals at the final accepted parameters |
 
@@ -433,6 +433,15 @@ With a wrong init length, all output parameters are NaN; otherwise invalid
 preflight retains initial values. Valid finite initial values are projected only
 after input validation. Failures after starting retain the last accepted point.
 
+Turn 11 adds exact-flat/zero spectral diagnostics (`degenerate_data`) when x
+varies and shape coordinates are free, plus `unresolved_peak` when an otherwise
+converged FWHM is smaller than positive monotone-grid spacing. Codes 0–3 and
+constant-x/fixed-coordinate behavior are preserved; new codes are 4 and 5.
+`NUMERICS.md` specifies the conditions, coordinate transforms, opt-in compensated
+accumulation/scaled Cholesky and float64-reference error study. Solver tolerances,
+box projection and exact diagonal damping do not change. Normalization is explicit
+preparation, not an implicit alteration of data or physical bounds.
+
 Verification runs 32 fits per model/noise/scalar combination: **768 recovery
 cases** across four models, noiseless/Gaussian/Poisson observations and float/
 double. Noiseless observations use exact scalar evaluation; noisy float32 data
@@ -533,8 +542,9 @@ Use `width*min(8,maxThreads/width)` threads per group, rejecting invalid limits;
 dispatch exactly N threads and keep a shader bounds guard. The measured M4 uses
 32-wide SIMD and 256-thread groups for every model. uint32 index-product checks
 and device maxBufferLength checks precede allocations; a zero-fit batch skips
-dispatch and returns empty views. A shared 92-byte scalar config has checked C++
-size/status-code layout and no STL/pointers in its MSL declaration.
+dispatch and returns empty views. The shared scalar config has checked C++
+size/status-code layout and no STL/pointers in MSL (108 bytes since turn 11,
+including numerical flags/grid diagnostics; historical v1 traces used 92 bytes).
 
 `src/metal/runtime.cpp` is the production metal-cpp driver: NS::SharedPtr owns
 retained objects and autorelease pools bound temporary lifetimes. Storage owns a
@@ -709,6 +719,11 @@ performance-noise ties, not numerical tolerance. Final selection is the exact
 fastest in 29/32 cells and within **4.01%** in the other three; all 32 pass the
 hard 5% selection-regret check. Actual auto-call time can differ slightly from
 the same forced pipeline's median because GPU clocks/load are uncontrolled.
+
+The following is the **historical turn-9** policy. Turn 11's specialized numerical
+pipelines/diagnostic guards shift Gaussian's T/S threshold to 1024: M=512 now
+uses T. Other buckets are unchanged. Its separate full matrix has maximum auto
+regret 2.61568%; see NUMERICS.md and `profiling/numerics_dispatch_results.csv`.
 
 | Model | M-policy on measured domain | Observed crossover brackets |
 | --- | --- | --- |
