@@ -11,10 +11,11 @@ parameters, convergence decisions and outputs. There is no coupling between fits
 The implementation provides build/test infrastructure, an internal squared-residual
 compute smoke primitive on CPU and Metal, shared CPU/MSL model definitions,
 chunked synthetic generation/NPY I/O, a single-fit CPU LM reference, and data-only
-automatic initial guesses and batched CPU fitting in float and double. It does
-**not** implement GPU fitting, a runtime model registry or Python bindings yet.
+automatic initial guesses and batched CPU fitting in float and double. It also
+includes an experimental one-thread-per-fit Metal v1 solver. It does **not**
+implement a runtime model registry or Python bindings yet.
 The backend-neutral API below remains a later contract; the implemented typed
-CPU APIs are described in the solver and batched-path sections.
+CPU/shared-Metal APIs are described in the implementation sections.
 
 ## Public API contract
 
@@ -420,6 +421,77 @@ Every GPU step must compare against these inputs/options and report equivalent
 end-to-end times separately from kernel-only timing. Dataset/setup/auto-guess and
 pool creation are excluded; result allocation, validation, fitting, dispatch and
 completion are included. Largest arrays are bounded and datasets are released.
+
+## Metal LM v1 and shared-buffer API
+
+`src/metal/lm.metal` ports the float CPU reference directly: one thread owns one
+fit's fixed P<=8 private arrays, serial point accumulation, Cholesky, active/fixed
+bounds, gain ratio/damping, stopping rules and status/iteration/cost outputs.
+The shared model header is included, not reimplemented. Its Metal math macro is
+globally qualified (`::metal::exp`) to avoid shadowing by the host API namespace.
+Safe math plus precise FP32 functions disable fast math; explicit per-statement
+contraction matches the CPU compiler policy, not a claim of bitwise transcendental
+or ill-conditioned nonlinear-trajectory identity.
+
+`tools/embed_metal.py` expands project includes into a generated C++ string at
+build time and inserts `#line` before/after each shared header. MSL compilation
+uses `newLibrary(source,options)` at context creation, with source file/line in
+reported NSError diagnostics. No offline compiler or runtime source-file access
+is required. CPU-only compilation never includes or downloads metal-cpp.
+
+`metal::Context` caches device/queue/library and four pipelines.
+`make_batch<Model>(N,M)` allocates x[M], point-major y[M*N], fit-major init[N*P],
+config and output buffers in `MTL::ResourceStorageModeShared`. Public spans map
+their contents directly. `fit_batch<Model>(batch, Device::Metal, options)` updates
+only the small shared config, binds the existing buffers, dispatches, waits and
+returns owning views. No array staging, blit, upload, transpose or result copy is
+performed during that call. The CPU reference overload on the same storage is
+explicit `Device::Cpu`; ordinary pooled CPU users retain their fit-major API.
+
+Each pipeline supplies `threadExecutionWidth` and `maxTotalThreadsPerThreadgroup`.
+Use `width*min(8,maxThreads/width)` threads per group, rejecting invalid limits;
+dispatch exactly N threads and keep a shader bounds guard. The measured M4 uses
+32-wide SIMD and 256-thread groups for every model. uint32 index-product checks
+and device maxBufferLength checks precede allocations; a zero-fit batch skips
+dispatch and returns empty views. A shared 92-byte scalar config has checked C++
+size/status-code layout and no STL/pointers in its MSL declaration.
+
+`src/metal/runtime.cpp` is the production metal-cpp driver: NS::SharedPtr owns
+retained objects and autorelease pools bound temporary lifetimes. Storage owns a
+resource bundle which owns its runtime; result views retain storage, with no
+ownership cycle. Objects survive context destruction while results remain, and
+are released when the last owner goes away. Queue submissions serialize under a
+runtime mutex; users retain exclusive access to any batch during execution.
+Views alias subsequent writes if that batch is reused. Every command is checked
+for completed status and non-null error before reading timestamps/output. GPU
+time is GPUEndTime-GPUStartTime after waitUntilCompleted; wall time includes host
+config/encoding/submission/wait, excluding context creation and input preparation.
+The safe/precise host path requires macOS 15+; unsupported/disabled Metal throws,
+never silently selects CPU.
+
+The test-only installed-SDK driver `tests/metal_runtime_native.mm` implements the
+same narrow host entry points with ARC so the production embedded MSL, shared
+storage mapping, public Device API, timestamps and numerical comparisons can run
+without downloadable metal-cpp. It is not a production fallback. The actual
+metal-cpp host remains uncompiled in this environment; its RAII was source-reviewed,
+not leak-instrumented through execution. Native tests verify buffer ownership
+after context/batch destruction, stable spans, model/dimension rejection, empty
+batches, failure statuses, clamping, and compiler file/line diagnostics. Metal API
+and shader validation were enabled for the 2,832-fit strict suite, which keeps
+parameter atol/rtol=2e-4/2e-4 and cost atol/rtol=1e-6/2e-5.
+
+The full CPU-v1 benchmark datasets were also evaluated per fit (N=100,000 at each
+model/M). All 1.6 million statuses/costs match their float CPU reference, including
+33 singular paired fits. Twelve parameter rows exceed the strict diagnostic:
+7 pseudo-Voigt at M=32, 2 at M=512, and 3 paired at M=2048. Two paired rows also
+exceed the pre-existing CPU float floor `5e-4*(1+abs(parameter))`. Both backends
+have high-cost local minima with both components on the same peak for those rows;
+largest parameter disagreement is about 0.00516. These are **remaining parity
+limitations**, not accepted as equivalent by the benchmark gate. The gate emits
+all timing rows, preserves mismatches and exits nonzero. No tolerance assertion
+in the strict suite was relaxed, no CPU fallback or per-fit result correction was
+introduced, and the CPU solver/initializer/baseline were left unchanged. See
+BENCHMARKS.md for timings and exact observed cases before treating v1 as universal.
 
 ## Apple GPU constraints
 

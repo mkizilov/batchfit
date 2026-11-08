@@ -134,3 +134,106 @@ counts and result hash. `--smoke` instead uses N=128, M=32, one repetition and
 1/2 workers for a cheap normal-budget check. `scripts/check.sh` similarly filters
 Google Benchmark to residual and small CPU-batch smoke runs; the full all-core
 matrix is an explicit performance step, never an ordinary Debug test workload.
+
+## Metal v1: one thread per fit
+
+**Experimental, with remaining parameter-parity failures.** The table below is
+real GPU execution of the production embedded `src/metal/lm.metal`, driven through
+the public shared-batch `Device::Metal` API by the test-only native SDK adapter.
+The metal-cpp production host and Google Benchmark wrappers could not be compiled
+here because downloads remain unavailable. Do not label these as metal-cpp or
+Google Benchmark execution results. No CPU fitting fallback/correction is used.
+
+Machine/compiler match the CPU baseline above. Context creation embeds/compiles
+MSL at runtime, with safe math, precise FP32 functions and explicit per-statement
+contraction. All pipelines reported SIMD width 32 and used 256-thread groups,
+derived from execution width/max-thread limits. N=100,000; inputs, seeds, noise,
+initial parameters, fallbacks, constraints and LM defaults are identical to CPU v1.
+Only y is transposed once to point-major shared storage outside the timed call.
+
+Three GPU calls follow a 256-fit warm-up. GPU seconds are command-buffer
+GPUEndTime-GPUStartTime after completion; wall seconds are an external steady-clock
+measurement around the full shared-buffer API call, including config, encoding,
+commit, wait and returned views. Both exclude context/pipeline creation and input
+generation/transpose. Dispatch performs no array copies or blits. These are
+ready-shared-buffer API times, not raw-image preparation/transfer-inclusive times.
+Native and Google Benchmark paths share `bench/metal_workload.hpp`.
+
+Each result is compared per fit against the float CPU reference (two CPU workers,
+outside GPU timing). GPU/status/cost failures are never dropped from N. One CPU
+fit-major and one GPU point-major dataset are resident during preparation; the
+CPU dataset is released before timing. Largest observation payloads total
+1,638,400,000 bytes during preparation. An earlier full diagnostic run measured
+1,664,745,472 bytes peak RSS (1,587.63 MiB); datasets are memory-only and released.
+
+| Model | M | GPU-time fits/s | Wall-time fits/s | Wall vs 10-core CPU | Strict parameter outlier rows |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Gaussian | 32 | 25,891,643 | 23,076,701 | 3.78x | 0 |
+| Lorentzian | 32 | 26,506,743 | 23,380,191 | 2.03x | 0 |
+| PseudoVoigt | 32 | 17,898,160 | 17,177,458 | 3.91x | 7 |
+| TwoLorentzian | 32 | 4,542,125 | 4,485,898 | 1.85x | 0 |
+| Gaussian | 128 | 10,432,787 | 9,969,054 | 4.42x | 0 |
+| Lorentzian | 128 | 9,681,050 | 9,265,694 | 2.35x | 0 |
+| PseudoVoigt | 128 | 8,717,446 | 8,364,614 | 5.52x | 0 |
+| TwoLorentzian | 128 | 2,819,102 | 2,798,364 | 2.64x | 0 |
+| Gaussian | 512 | 4,152,845 | 4,108,639 | 6.32x | 0 |
+| Lorentzian | 512 | 3,643,651 | 3,606,566 | 3.16x | 0 |
+| PseudoVoigt | 512 | 2,835,261 | 2,796,443 | 6.91x | 2 |
+| TwoLorentzian | 512 | 786,327 | 784,105 | 2.90x | 0 |
+| Gaussian | 2048 | 808,527 | 806,544 | 6.35x | 0 |
+| Lorentzian | 2048 | 605,114 | 603,909 | 3.03x | 0 |
+| PseudoVoigt | 2048 | 503,862 | 503,081 | 6.24x | 0 |
+| TwoLorentzian | 2048 | 138,392 | 137,616 | 2.02x* | 3* |
+
+### Accuracy qualification — not a fully green matrix
+
+- All **1.6 million status and chi-squared comparisons match**. Cost bound is
+  `1e-6 + 2e-5*abs(CPU)`. GPU has the same 33 singular paired rows as CPU.
+- The strict 2,832-fit unit suite passes every parameter at
+  `2e-4 + 2e-4*abs(CPU)`; that tolerance was not relaxed.
+- The full matrix exposes **12** rows beyond that stricter parameter diagnostic:
+  seven pseudo-Voigt M=32, two M=512, three paired M=2048. The pseudo-Voigt maxima
+  are about 0.000324/0.000290, within the CPU reference's already documented float
+  floor `5e-4*(1+abs(parameter))`, but still reported as strict outliers.
+- **Two paired rows also exceed that reference floor**, with worst absolute
+  disagreement about 0.00516. Both CPU and GPU report convergence to poor local
+  minima placing both components on one physical peak. At row 18,304, chi-squared
+  is approximately 187.99 and both centers are negative; at row 41,636 it is
+  approximately 172.708 and both centers are positive, despite the input's
+  separated left/right peaks. Matching objective/status is not unique-parameter
+  equivalence. These remain genuine v1 limitations, not certified matches.
+- `*` The largest paired performance row is therefore **timing only, not
+  accuracy-qualified**. The native benchmark emits all rows/mismatch diagnostics
+  and deliberately returns exit 1 for the two reference-floor violations. The
+  Google Benchmark wrapper marks the corresponding case with SkipWithError.
+  Neither CPU reference, initializer, options nor strict tests were changed to
+  manufacture a pass. The full benchmark validator remains red.
+
+Observed timing is not a promise of speedup on every device. For the largest
+paired case GPU/wall medians were 0.722585/0.726661 s. Source/host compilation,
+zero-copy lifetime, hardware validation and numerical parity are separate claims:
+the native driver verifies the latter shared-kernel/API behavior, not executed
+NS::SharedPtr production ownership. That production path remains unverified.
+
+### Reproduce Metal measurements
+
+With normal Metal dependencies available, build Release with BATCHFIT_METAL=ON
+and run `build/metal-release/batchfit_metal_baseline`. Google Benchmark cases
+`metal_lm_*` use manual GPU time and expose both `gpu_fits_per_second` and
+`wall_fits_per_second` counters; use `--benchmark_repetitions=3`. `metal_lm_smoke`
+uses only 257 fits and is part of the ordinary Metal check gate.
+
+The native SDK fallback used here is explicit and test-only:
+
+```sh
+mkdir -p .agent-local/check/generated
+python3 tools/embed_metal.py .agent-local/check/generated/lm_source.hpp
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O3 -DNDEBUG -pthread -fobjc-arc -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/metal -I.agent-local/check/generated -x objective-c++ tests/metal_runtime_native.mm src/cpu/thread_pool.cpp src/cpu/npy.cpp src/cpu/synthetic.cpp bench/metal_baseline.cpp -framework Foundation -framework Metal -o .agent-local/check/batchfit_metal_baseline
+.agent-local/check/batchfit_metal_baseline  # current v1: timings + parity diagnostics, exits 1
+rm .agent-local/check/batchfit_metal_baseline .agent-local/check/generated/lm_source.hpp
+rmdir .agent-local/check/generated .agent-local/check
+```
+
+`--smoke` instead runs 257 fits at M=32 for each model and passes parity. Keep the
+known full-matrix failure visible until an actual numerical fix is verified;
+do not substitute smoke success for full-matrix equivalence.

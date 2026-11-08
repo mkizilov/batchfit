@@ -3,7 +3,7 @@
 #if defined(__METAL_VERSION__)
 #include <metal_math>
 #define BATCHFIT_MODEL_THREAD thread
-#define BATCHFIT_MODEL_EXP(value) metal::exp(value)
+#define BATCHFIT_MODEL_EXP(value) ::metal::exp(value)
 #define BATCHFIT_MODEL_LN2 0.69314718055994530942f
 #else
 #define BATCHFIT_MODEL_THREAD

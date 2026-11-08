@@ -18,6 +18,10 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "tests/batch_failure_check.cpp",
         root / "bench/cpu_baseline.cpp",
         root / "bench/cpu_batch.cpp",
+        root / "tests/metal_lm_check.cpp",
+        root / "tests/metal_disabled_check.cpp",
+        root / "bench/metal_baseline.cpp",
+        root / "bench/metal_batch.cpp",
         root / "tests/synthetic_check.cpp",
         root / "tools/generate.cpp",
     ):

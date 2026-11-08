@@ -33,7 +33,8 @@ Extend this file with the project's language-specific architecture and verificat
   the stack. Preserve checked Cholesky, exact diagonal damping, best accepted
   state, projected box constraints and the documented stopping/status semantics.
 - Model/noise/scalar recovery, all failure statuses and allocation instrumentation
-  must pass for solver changes. GPU fitting remains separate future work.
+  must pass for solver changes. Metal v1 has explicit remaining parity limits
+  documented in BENCHMARKS.md; never hide them by relaxing tests or CPU fallback.
 - Batched CPU fitting lives in `include/batchfit/cpu/batch.hpp`; its reusable
   std::jthread pool is in `src/cpu/thread_pool.cpp`. Preserve per-row reference
   results, disjoint writes, synchronous completion and exception-safe pool reuse.
@@ -66,6 +67,13 @@ Extend this file with the project's language-specific architecture and verificat
 - NPY I/O is our narrow v1.0 float32 C-order implementation. Validate file headers,
   shape/byte counts and integer overflow; do not add implicit dtype conversions.
   The CLI must refuse preexisting output directories and roll back its own failures.
+- Metal fitting uses `include/batchfit/metal/batch.hpp` and `src/metal/lm.metal`:
+  point-major shared observations, direct shared-buffer spans, fixed private arrays
+  and one thread per fit. Preserve embedded #line diagnostics, safe/precise math,
+  pipeline-derived groups, checked command status/error, and both timing domains.
+- `tests/metal_runtime_native.mm` is test-only SDK verification when metal-cpp
+  downloads fail; never link it into production or claim it verifies NS::SharedPtr
+  host compilation. CMake Metal tests link the actual metal-cpp driver.
 
 ## Setup and verification
 

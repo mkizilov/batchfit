@@ -3,8 +3,9 @@
 C++20 infrastructure for fitting batches of small independent nonlinear models
 on CPU and Apple Metal. See [DESIGN.md](DESIGN.md) for the fitting API and solver
 contract. Shared Gaussian, Lorentzian, pseudo-Voigt and paired-Lorentzian models
-compile as both C++ and MSL. Single-fit and batched CPU LM solvers are available
-in float and double; GPU fitting is not implemented yet.
+compile as both C++ and MSL. Single-fit/batched CPU LM solvers support float and
+double; an experimental float32 Metal v1 path uses one GPU thread per fit. See
+the Metal section for its verified scope and remaining parity limitations.
 
 ```cpp
 #include <batchfit/models.hpp>
@@ -89,6 +90,63 @@ Google Benchmark registrations and a shared-workload native runner are provided;
 the recorded measurements are from the native runner because dependency downloads
 remain blocked. The full matrix is opt-in; normal checks use a small two-worker
 smoke case.
+
+## Metal v1: shared point-major batches
+
+Enable `BATCHFIT_METAL=ON` (the macOS default). The metal-cpp production host uses
+`NS::SharedPtr`/autorelease pools and runtime source compilation; no offline Metal
+compiler is needed. This path requires macOS 15+ for explicit safe/precise math.
+
+```cpp
+#include <batchfit/batchfit.hpp>
+batchfit::metal::Context context; // compiles embedded MSL and caches four pipelines
+auto batch = context.make_batch<batchfit::models::Gaussian>(N, M);
+// Fill these CPU spans directly; their storage is MTLResourceStorageModeShared:
+// batch.x()[m], batch.y()[m*N+i], batch.initial()[i*3+k].
+batchfit::cpu::SolverOptions<float, 3> options;
+options.lower[2] = 0.01f;
+auto result = batchfit::fit_batch<batchfit::models::Gaussian>(
+    batch, batchfit::Device::Metal, options);
+// result.parameters[i*3+k], status[i], iterations[i], chi_squared[i]
+// result.timings.gpu_seconds / wall_seconds; SIMD/group sizes are also reported.
+```
+
+Inputs/outputs live in shared Metal buffers; dispatch does not upload, transpose
+or copy array data. **y is point-major**, unlike the fit-major CPU API. Prepare or
+transpose it once before timing. Initial/output parameters remain fit-major.
+`Device::Cpu` on this same shared-batch overload is an explicit single-thread
+reference path that gathers rows; it is never a fallback for `Device::Metal`.
+The existing pooled `cpu::fit_batch` is unchanged.
+
+The call is synchronous and checks compilation, functions, pipelines, allocations,
+encoder/command creation, command status/error and GPU timestamps. Embedded shared
+headers retain file/line diagnostics through `#line`. Threadgroups are SIMD-width
+multiples derived from the pipeline limits. A context serializes submissions;
+callers must not mutate buffers or reuse one batch concurrently with a call.
+Result spans retain their buffers/runtime after context/batch destruction, but
+are **views, not snapshots**: reusing the batch overwrites earlier result views.
+Empty batches are supported; dimensions must fit uint32 shader indexing and the
+device's buffer length limits. CPU-only builds report unavailable Metal explicitly.
+
+**Verification:** 2,832 per-fit CPU/GPU comparisons pass at parameter tolerance
+`2e-4 + 2e-4*abs(CPU)` and cost tolerance `1e-6 + 2e-5*abs(CPU)`, including bounds,
+failure statuses, SIMD tails, point-major indexing, lifetime and diagnostic tests.
+Metal API/shader validation was enabled for a native SDK test run. Because shell
+DNS still prevents metal-cpp/CMake downloads, these actual GPU checks use the
+test-only ARC driver `tests/metal_runtime_native.mm`, compiling the **production
+embedded kernel** and exercising the same public API/storage helpers. It is never
+linked into the production library. The metal-cpp host translation unit remains
+**uncompiled/unverified here**; the normal Metal CMake targets exercise it when
+dependencies are available.
+
+**Known numerical limit:** the full 1.6-million-fit benchmark matches every CPU
+status/cost, but 12 rows exceed the stricter parameter diagnostic, and two large
+paired rows also exceed the CPU reference's existing float numerical floor.
+The latter converge to poor local minima in both backends. The full benchmark
+validator deliberately exits nonzero; its tests were **not** relaxed and no CPU
+fallback was added. This v1 path is not universally parameter-equivalent yet.
+[BENCHMARKS.md](BENCHMARKS.md) records GPU timestamp and wall-time fits/s, CPU
+comparisons, mismatch counts and reproduction commands.
 
 ## Automatic initial guesses
 
@@ -275,6 +333,20 @@ Formatting: `python3 tools/check_format.py`; apply fixes with
 or analyze downloaded third-party code as project source.
 
 ## Offline diagnostic check
+
+Native installed-SDK verification when metal-cpp cannot be downloaded:
+
+```sh
+mkdir -p .agent-local/check/generated
+python3 tools/embed_metal.py .agent-local/check/generated/lm_source.hpp
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O2 -fobjc-arc -DBATCHFIT_NATIVE_METAL_TESTS=1 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/metal -I.agent-local/check/generated -x objective-c++ tests/metal_runtime_native.mm src/cpu/npy.cpp src/cpu/synthetic.cpp tests/metal_lm_check.cpp -framework Foundation -framework Metal -o .agent-local/check/metal_lm_check
+MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 .agent-local/check/metal_lm_check
+rm .agent-local/check/metal_lm_check .agent-local/check/generated/lm_source.hpp
+rmdir .agent-local/check/generated .agent-local/check
+```
+
+This verifies real MSL execution/public buffer semantics, not metal-cpp host
+compilation or NS::SharedPtr lifetime instrumentation. See the full-gate limits below.
 
 The batch/thread-pool suite needs no downloaded dependencies:
 
