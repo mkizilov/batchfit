@@ -11,10 +11,10 @@ parameters, convergence decisions and outputs. There is no coupling between fits
 The implementation provides build/test infrastructure, an internal squared-residual
 compute smoke primitive on CPU and Metal, shared CPU/MSL model definitions,
 chunked synthetic generation/NPY I/O, a single-fit CPU LM reference, and data-only
-automatic initial guesses in float and double. It does **not** implement batch/GPU
-fitting, a model registry, CPU fit scheduling or Python bindings yet. The batch
-API below is the contract for later tasks; the single-fit API is implemented as
-described in the solver section.
+automatic initial guesses and batched CPU fitting in float and double. It does
+**not** implement GPU fitting, a runtime model registry or Python bindings yet.
+The backend-neutral API below remains a later contract; the implemented typed
+CPU APIs are described in the solver and batched-path sections.
 
 ## Public API contract
 
@@ -371,6 +371,55 @@ An exponential fixture rejects an overshoot then recovers with adjusted damping;
 a high-damping fixture ensures tiny artificial progress cannot masquerade as
 convergence. A separate executable instruments C++ new/new[] across all eight
 built-in model/scalar fit calls and verifies zero allocations for the whole call.
+
+## Batched CPU path
+
+`cpu::fit_batch<T, Model>(x, y, initial, pool, options)` borrows shared x[M],
+fit-major y[N*M] and initial[N*P], returning owning vectors for parameters, status,
+iterations and chi-squared in original fit order. Infer N from y/M and validate
+shapes with division/remainders rather than overflowing products. Nonempty x is
+required even for N=0. A well-shaped empty batch returns empty arrays. Shape
+errors throw; numerical input/options failures retain each `fit_single` status,
+including shared bad x affecting every row. Bounds/options are shared across fits.
+No baseline preprocessing, auto-initialization, dtype/layout conversion or
+reduction across fits is hidden in this operation.
+
+`cpu::ThreadPool` defaults to two persistent standard C++20 `std::jthread`
+workers. A synchronous `parallel_for` publishes one range job under a mutex and
+condition variable, with an atomic 64-fit chunk cursor for load balancing. Its
+stop-aware condition-variable waits allow idle/partially constructed pools to
+join safely. Concurrent external submissions serialize under a submission mutex;
+same-pool worker recursion throws instead of deadlocking. Lifetime remains
+caller-owned: the pool must outlive all calls, and cross-pool dependency cycles
+or destruction from a callback are not supported.
+
+Workers write disjoint output slices and call the unchanged single-fit reference,
+with no heap allocation inside LM. Output vectors and one job closure are allocated
+outside that loop. A completion counter/mutex establishes the join before results
+are returned. The first worker exception is saved, unscheduled chunks are cancelled
+best-effort, all workers drain and the original exception is rethrown on the caller.
+No partial batch is returned after an exception; subsequent submissions reset job
+state and reuse the pool. Constructor/destructor thread ownership is RAII and uses
+no OpenMP or third-party threading runtime.
+
+Tests force two workers to meet at a barrier, verify exactly-once uneven-tail
+coverage, stress job reuse/concurrent callers, propagate callback/model exceptions,
+and exercise lifecycle and recursive rejection. All four models in float/double
+compare every result bit against direct `fit_single` calls with one/two workers,
+including NaNs, invalid rows and max-iteration behavior. Dedicated cases preserve
+mixed singular/converged/invalid statuses and shared invalid-x behavior. Native
+ASan/UBSan and ThreadSanitizer runs validate memory and synchronization. CTest
+reserves two processor slots for pool tests; only the explicit required benchmark
+uses all detected cores.
+
+`BENCHMARKS.md` records the N=100,000, M=32/128/512/2048 float32 CPU baselines,
+hardware, input distributions, median-of-three timing boundaries and failure
+counts. Google Benchmark uses real time and fits/s counters; a dependency-free
+runner shares the exact workload and API when framework downloads are unavailable.
+Every GPU step must compare against these inputs/options and report equivalent
+end-to-end times separately from kernel-only timing. Dataset/setup/auto-guess and
+pool creation are excluded; result allocation, validation, fitting, dispatch and
+completion are included. Largest arrays are bounded and datasets are released.
 
 ## Apple GPU constraints
 

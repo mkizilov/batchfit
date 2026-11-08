@@ -3,8 +3,8 @@
 C++20 infrastructure for fitting batches of small independent nonlinear models
 on CPU and Apple Metal. See [DESIGN.md](DESIGN.md) for the fitting API and solver
 contract. Shared Gaussian, Lorentzian, pseudo-Voigt and paired-Lorentzian models
-compile as both C++ and MSL. A single-fit CPU LM solver is available in float and
-double; batch/GPU fitting is not implemented yet.
+compile as both C++ and MSL. Single-fit and batched CPU LM solvers are available
+in float and double; GPU fitting is not implemented yet.
 
 ```cpp
 #include <batchfit/models.hpp>
@@ -54,6 +54,41 @@ suite recovers 768 synthetic fits across every model/scalar/noise combination,
 with noise-scaled parameter tolerances and deliberate status failures. A separate
 global-new counter verifies zero C++ allocations across all eight model/scalar
 calls, not only the inner iteration loop.
+
+## Batched CPU fitting
+
+```cpp
+#include <batchfit/batchfit.hpp>
+batchfit::cpu::ThreadPool pool(2); // reusable; no OpenMP or external pool dependency
+// shared x[M], flat fit-major observations[N*M], initial[N*P]
+auto results = batchfit::cpu::fit_batch<double, batchfit::models::Gaussian>(
+    x, observations, initial_parameters, pool, options);
+// results.parameters[N*P], status[N], iterations[N], chi_squared[N]
+```
+
+Pool workers are persistent `std::jthread`s, claiming 64-fit ranges. Each row calls
+the unchanged allocation-free `fit_single` reference. Output ordering and per-fit
+failure statuses are preserved regardless of scheduling; no invalid rows are
+dropped. The call waits for every worker. Reuse the pool across batches to avoid
+thread startup overhead. The normal default is two workers; zero is invalid.
+
+N is inferred from `observations.size()/x.size()`. Wrong batch shapes throw
+`std::invalid_argument`; bad data/options inside a well-shaped row return that
+row's reference status. Zero fits return empty arrays with nonempty x. Input spans
+are borrowed read-only and output vectors own their data. Automatic initial
+guesses remain an explicit preparation step, not hidden inside the timed API.
+Worker/model exceptions propagate to the caller after all workers drain, and the
+pool remains reusable. Concurrent external submissions serialize; direct
+same-pool recursion is rejected. Do not destroy a pool during a call or create
+cyclic dependencies between pools/callbacks.
+
+[BENCHMARKS.md](BENCHMARKS.md) records the required N=100,000 matrix for all four
+models and M=32/128/512/2048 on one and all 10 Mac M4 cores. Three-run median
+speedups are 3.91–5.30x. Peak process RSS was 997.03 MiB with one dataset resident.
+Google Benchmark registrations and a shared-workload native runner are provided;
+the recorded measurements are from the native runner because dependency downloads
+remain blocked. The full matrix is opt-in; normal checks use a small two-worker
+smoke case.
 
 ## Automatic initial guesses
 
@@ -240,6 +275,25 @@ Formatting: `python3 tools/check_format.py`; apply fixes with
 or analyze downloaded third-party code as project source.
 
 ## Offline diagnostic check
+
+The batch/thread-pool suite needs no downloaded dependencies:
+
+```sh
+mkdir -p .agent-local/check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O2 -pthread -Wall -Wextra -Wpedantic -Werror -Iinclude src/cpu/thread_pool.cpp src/cpu/npy.cpp src/cpu/synthetic.cpp tests/batch_check.cpp -o .agent-local/check/batch_check
+.agent-local/check/batch_check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O2 -pthread -Wall -Wextra -Wpedantic -Werror -Iinclude src/cpu/thread_pool.cpp tests/batch_failure_check.cpp -o .agent-local/check/batch_failure_check
+.agent-local/check/batch_failure_check
+rm .agent-local/check/batch_check .agent-local/check/batch_failure_check
+rmdir .agent-local/check
+```
+
+Pool/batch checks pass ASan/UBSan and ThreadSanitizer, as well as normal native
+compilation. The suite verifies actual parallelism, exactly-once tail coverage,
+reuse, cancellation/exception propagation, concurrent submissions, zero/invalid
+shapes, and bitwise single-fit equivalence across all models/scalars. The separate
+failure executable covers mixed singular/converged/invalid rows and thrown model
+exceptions. CTest reserves two job slots for pool tests to prevent oversubscription.
 
 Run automatic-guess feature checks and the complete 24,000-case convergence study:
 

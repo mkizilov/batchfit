@@ -19,7 +19,7 @@ cmake --build --preset cpu
 ctest --preset cpu
 python3 tools/check_generator.py build/cpu/batchfit_generate
 python3 tools/run_tidy.py build/cpu
-build/cpu/batchfit_bench --benchmark_min_time=0.01s
+build/cpu/batchfit_bench --benchmark_filter='cpu_residuals|cpu_batch_smoke' --benchmark_min_time=0.01s
 if [ "$(uname -s)" = Darwin ]; then
     cmake --preset metal
     cmake --build --preset metal

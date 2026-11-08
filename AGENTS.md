@@ -33,7 +33,14 @@ Extend this file with the project's language-specific architecture and verificat
   the stack. Preserve checked Cholesky, exact diagonal damping, best accepted
   state, projected box constraints and the documented stopping/status semantics.
 - Model/noise/scalar recovery, all failure statuses and allocation instrumentation
-  must pass for solver changes. GPU/batch fitting remains separate future work.
+  must pass for solver changes. GPU fitting remains separate future work.
+- Batched CPU fitting lives in `include/batchfit/cpu/batch.hpp`; its reusable
+  std::jthread pool is in `src/cpu/thread_pool.cpp`. Preserve per-row reference
+  results, disjoint writes, synchronous completion and exception-safe pool reuse.
+  Pool tests reserve two CTest processor slots and never use all-core mode.
+- `BENCHMARKS.md` is the CPU baseline for every GPU performance step. Full
+  N=100,000 matrices are Release-only explicit benchmarks; only those may use
+  all detected cores. Ordinary check.sh runs filter to small benchmark smoke cases.
 - Automatic guesses live in `include/batchfit/cpu/initial_guess.hpp`, separately
   from LM. Preserve edge-median baselines, centroid/FWHM width conventions and
   documented positive-emission/grid requirements. Never silently subtract a

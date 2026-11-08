@@ -14,6 +14,10 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "tests/models_check.cpp",
         root / "tests/solver_check.cpp",
         root / "tests/initial_guess_check.cpp",
+        root / "tests/batch_check.cpp",
+        root / "tests/batch_failure_check.cpp",
+        root / "bench/cpu_baseline.cpp",
+        root / "bench/cpu_batch.cpp",
         root / "tests/synthetic_check.cpp",
         root / "tools/generate.cpp",
     ):
