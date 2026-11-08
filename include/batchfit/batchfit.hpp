@@ -1,5 +1,7 @@
 #pragma once
 
+#include <batchfit/models.hpp>
+
 #include <cstddef>
 #include <string_view>
 

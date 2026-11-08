@@ -8,9 +8,10 @@ where 1 <= P <= 8. A hyperspectral image supplies one spectrum per pixel. Fits
 share a model and usually an x grid, but have independent observations, initial
 parameters, convergence decisions and outputs. There is no coupling between fits.
 
-Turn 1 provides build/test infrastructure and an internal squared-residual compute
-smoke primitive on CPU and Metal. It does **not** implement fitting, a model
-registry, CPU fit scheduling or Python bindings yet. The following fitting API
+The implementation provides build/test infrastructure, an internal squared-residual
+compute smoke primitive on CPU and Metal, and shared CPU/MSL model definitions.
+It does **not** implement fitting, a model registry, CPU fit scheduling or Python
+bindings yet. The following fitting API
 and solver are the implementation contract for subsequent tasks, not a claim
 that an unimplemented function works.
 
@@ -55,6 +56,66 @@ Batch-level errors (invalid dimensions, unavailable device, allocation or Metal
 execution failures) throw exceptions with operation-specific context. Device
 errors are not numerical fit statuses. Outputs are available only after GPU
 completion and validation of command-buffer status.
+
+## Shared model definitions
+
+`include/batchfit/models.hpp` is the single source for CPU and MSL evaluation and
+analytic Jacobians. The empty, standard-layout structs are templated on scalar
+type: `models::Gaussian<T>`, `Lorentzian<T>`, `PseudoVoigt<T>` and
+`TwoLorentzian<T>`. C++ supports float and double; shaders instantiate float only.
+Each has an integral `parameter_count`, `parameter_name(index)`,
+`eval(x, params)` and `jacobian(x, params, out)`. Jacobians are **df/dp**, not
+residual derivatives, in parameter order. Caller-owned arrays have at least
+`parameter_count` elements; the functions allocate nothing and do not mutate
+parameters. Copy device/constant parameters into a thread-local array before
+calling them in MSL, and supply a separate thread-local Jacobian output.
+
+All amplitudes are signed **peak heights**, not areas. Let `d = x - center`:
+
+| Model | Parameter order | Evaluation |
+| --- | --- | --- |
+| Gaussian | amplitude, center, sigma | `amplitude * exp(-d*d/(2*sigma*sigma))` |
+| Lorentzian | amplitude, center, hwhm | `amplitude / (1 + d*d/(hwhm*hwhm))` |
+| PseudoVoigt | amplitude, center, fwhm, mixing | `amplitude * ((1-mixing)*G + mixing*L)`, with `G = exp(-4*ln(2)*d*d/(fwhm*fwhm))`, `L = 1/(1+4*d*d/(fwhm*fwhm))` |
+| TwoLorentzian | amplitude1, center1, hwhm1, amplitude2, center2, hwhm2, intercept, slope | Two independent Lorentzian peaks plus **one** shared `intercept + slope*x` |
+
+Widths must be finite and strictly positive. `mixing` is the Lorentzian fraction,
+normally in [0,1]; both pseudo-Voigt components have the same FWHM, so any mixture
+has half height at `center +/- fwhm/2`. The other models have no baseline. Paired
+peaks need not be sorted or separated, but coincident peaks can be unidentifiable
+for a later solver. These arithmetic primitives do not clamp parameters, throw,
+or impose bounds. The eventual fitting input/step validation owns those checks.
+
+Metadata is a shared `ParameterName` enum, avoiding string literals and pointer
+tables in shaders. On the host, `parameter_name_text(Model::parameter_name(k))`
+returns the canonical string from the table above. Out-of-range indices return
+`unknown`. There are no C/C++ standard library includes, containers or storage
+objects in the shared header. Small macros select MSL `thread`, `metal::exp` and
+float constants versus host Clang/GCC math intrinsics and double constants; all
+macros are undefined after the header. Only the shader branch includes
+`metal_math`. This intentionally targets the repository's Clang/GCC toolchains.
+
+Validation uses the same checks through GoogleTest and a standalone executable:
+2,000 fixed-seed parameter sets per model per scalar type, totaling 16,000 sets
+and 72,000 central finite-difference derivative comparisons. It covers signed
+and zero amplitudes, peak centers, mixing endpoints, nonzero baselines, output
+canaries and parameter-name ordering. Steps scale with peak width for positions
+and widths, and with parameter magnitude otherwise; the actual representable
+perturbation is used in the denominator. Float comparisons use `3e-4 + 2e-3*|fd|`,
+double comparisons `2e-8 + 2e-7*|fd|`, accounting for finite-difference roundoff
+and truncation rather than solver accuracy. Hand-computed centers, half-widths,
+off-center values and pure-mixture limits independently check model conventions.
+
+`tests/models_check.metal` includes this header verbatim. The test-only native
+Objective-C++ harness `tests/models_metal.mm` expands that include for runtime
+compilation (Metal has no runtime filesystem include-path option), checks shader
+compilation/pipeline/command errors, and compares every result for 257 parameter
+sets per model against CPU double evaluation/Jacobians and CPU float Jacobians.
+Tolerance is `2e-5 + 3e-5*|reference|`. It uses safe math and ARC, and does not
+replace or change the metal-cpp production backend. Using installed SDK interfaces
+here provides an independent, dependency-free MSL compiler oracle even when
+metal-cpp/GoogleTest downloads are unavailable. The Metal preset runs it via CTest;
+a missing GPU is an error, never a skip.
 
 ## Memory layout and mapping
 

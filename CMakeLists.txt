@@ -48,13 +48,26 @@ if(BATCHFIT_BUILD_TESTS)
     target_include_directories(batchfit_cpu_smoke PRIVATE src)
     target_link_libraries(batchfit_cpu_smoke PRIVATE batchfit::batchfit)
     add_test(NAME cpu_smoke COMMAND batchfit_cpu_smoke)
+    add_executable(batchfit_models_check tests/models_check.cpp)
+    target_link_libraries(batchfit_models_check PRIVATE batchfit::batchfit)
+    add_test(NAME models_check COMMAND batchfit_models_check)
+    if(BATCHFIT_METAL)
+        enable_language(OBJCXX)
+        add_executable(batchfit_models_metal tests/models_metal.mm)
+        target_compile_options(batchfit_models_metal PRIVATE -fobjc-arc)
+        target_link_libraries(batchfit_models_metal PRIVATE batchfit::batchfit
+            "${METAL_FRAMEWORK}" "${FOUNDATION_FRAMEWORK}")
+        set_target_properties(batchfit_models_metal PROPERTIES OBJCXX_STANDARD 20
+            OBJCXX_STANDARD_REQUIRED ON OBJCXX_EXTENSIONS OFF)
+        add_test(NAME models_metal COMMAND batchfit_models_metal "${PROJECT_SOURCE_DIR}")
+    endif()
     FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
         URL_HASH SHA256=7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
-    add_executable(batchfit_tests tests/backend_test.cpp)
+    add_executable(batchfit_tests tests/backend_test.cpp tests/models_test.cpp)
     target_include_directories(batchfit_tests PRIVATE src)
     target_link_libraries(batchfit_tests PRIVATE batchfit::batchfit GTest::gtest_main)
     include(GoogleTest)

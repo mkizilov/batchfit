@@ -2,8 +2,19 @@
 
 C++20 infrastructure for fitting batches of small independent nonlinear models
 on CPU and Apple Metal. See [DESIGN.md](DESIGN.md) for the fitting API and solver
-contract. **This first scaffold implements residual compute smoke tests, not a
-nonlinear fitter.**
+contract. Shared Gaussian, Lorentzian, pseudo-Voigt and paired-Lorentzian models
+compile as both C++ and MSL. **A nonlinear fitter is not implemented yet.**
+
+```cpp
+#include <batchfit/models.hpp>
+double params[3] = {4.0, 1.0, 2.0}; // height, center, sigma
+double jacobian[3];
+double value = batchfit::models::Gaussian<double>::eval(3.0, params);
+batchfit::models::Gaussian<double>::jacobian(3.0, params, jacobian);
+```
+
+Parameter ordering, width conventions and domains are specified in
+[the model contract](DESIGN.md#shared-model-definitions).
 
 ## Local setup
 
@@ -68,10 +79,31 @@ rm .agent-local/check/cpu_smoke
 rmdir .agent-local/check
 ```
 
+The complete float/double model checks can also run without external packages:
+
+```sh
+mkdir -p .agent-local/check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -Wall -Wextra -Wpedantic -Werror -Iinclude tests/models_check.cpp -o .agent-local/check/models_check
+.agent-local/check/models_check
+# macOS: validate actual MSL compilation and compare GPU output to CPU references
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -fobjc-arc -Wall -Wextra -Wpedantic -Werror -Iinclude tests/models_metal.mm -framework Foundation -framework Metal -o .agent-local/check/models_metal
+.agent-local/check/models_metal "$PWD"
+rm .agent-local/check/models_check .agent-local/check/models_metal
+rmdir .agent-local/check
+```
+
+Omit `-isysroot ...` on non-macOS systems and do not run the Metal commands there.
+Turn 2 verified all 72,000 float/double model derivative comparisons, hand values,
+and 1,028 real GPU model/Jacobian cases. The CPU model suite also passed with
+AddressSanitizer and UndefinedBehaviorSanitizer, and the earlier CPU smoke still
+passes. These standalone checks are also CTest
+targets; the float/double suites additionally run through GoogleTest. Their
+success does not remove the full-gate limitations below.
+
 This is **not** a full test pass. Initial implementation environment: shell DNS
 failed for GitHub, PyPI and developer.apple.com; uv/CMake/Ninja/clang-tidy were
 absent. Consequently dependency installation, uv environment creation, CMake,
-GoogleTest/Benchmark and Metal execution could not be verified. Re-run the full
+GoogleTest/Benchmark and the original metal-cpp backend could not be verified. Re-run the full
 gate after connectivity and prerequisites are available; do not bypass isolation.
 
 The offline CPU smoke did pass with Clang 21 after explicitly supplying

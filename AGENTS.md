@@ -28,6 +28,14 @@ Extend this file with the project's language-specific architecture and verificat
   completion status. An explicit Metal request must not silently fall back.
 - The initial residual smoke primitive is not the LM fitting implementation.
   Follow `DESIGN.md` for the eventual public fitting contract and precision rules.
+- Model structs in `include/batchfit/models.hpp` must compile as both C++ and
+  MSL: no C/C++ library includes or dynamic storage, thread-local parameter/output
+  arrays in shaders, and no shader double types or string metadata. Keep formulas,
+  names, parameter order and width conventions documented in `DESIGN.md`.
+- Every analytic model Jacobian must pass central finite differences in float
+  and double. The standalone `tests/models_check.cpp` and GoogleTest wrappers
+  share the same full checks. The Metal preset also runs the independent native
+  SDK oracle `tests/models_metal.mm` (test-only Objective-C++, not a backend).
 - CMake 3.24+ presets isolate CPU and Metal builds. `BATCHFIT_METAL=ON` is the
   macOS default; `OFF` must never fetch metal-cpp or link Apple frameworks.
 - GoogleTest and Google Benchmark use pinned FetchContent archives; metal-cpp
@@ -54,8 +62,10 @@ sh scripts/check.sh
 
 Use `clang-format -i <files>` for maintained C++/Metal files; `.clang-format` is
 authoritative. `clang-tidy` uses `.clang-tidy` plus each build's compile database.
-`tools/run_tidy.py` runs the library translation units serially, including Metal
-host code in its build. All ordinary builds/tests have at most two workers.
+`tools/run_tidy.py` runs library translation units and CPU model instantiations
+serially, including Metal host code in its build. All ordinary builds/tests have
+at most two workers. README includes standalone CPU/MSL model commands for offline
+verification; these do not replace the full gate.
 
 **All checks pass** means `scripts/check.sh` exits zero: formatting is clean,
 both required presets configure/build, every CTest/GoogleTest passes, clang-tidy
