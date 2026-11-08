@@ -1,5 +1,6 @@
 #pragma once
 
+#include <batchfit/cpu/initial_guess.hpp>
 #include <batchfit/cpu/solver.hpp>
 #include <batchfit/models.hpp>
 #include <batchfit/synthetic.hpp>

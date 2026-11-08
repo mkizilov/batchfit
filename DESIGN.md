@@ -10,10 +10,11 @@ parameters, convergence decisions and outputs. There is no coupling between fits
 
 The implementation provides build/test infrastructure, an internal squared-residual
 compute smoke primitive on CPU and Metal, shared CPU/MSL model definitions,
-chunked synthetic generation/NPY I/O, and a single-fit CPU LM reference in float
-and double. It does **not** implement batch/GPU fitting, a model registry, CPU fit
-scheduling or Python bindings yet. The batch API below is the contract for later
-tasks; the single-fit API is implemented as described in the solver section.
+chunked synthetic generation/NPY I/O, a single-fit CPU LM reference, and data-only
+automatic initial guesses in float and double. It does **not** implement batch/GPU
+fitting, a model registry, CPU fit scheduling or Python bindings yet. The batch
+API below is the contract for later tasks; the single-fit API is implemented as
+described in the solver section.
 
 ## Public API contract
 
@@ -116,6 +117,84 @@ replace or change the metal-cpp production backend. Using installed SDK interfac
 here provides an independent, dependency-free MSL compiler oracle even when
 metal-cpp/GoogleTest downloads are unavailable. The Metal preset runs it via CTest;
 a missing GPU is an error, never a skip.
+
+## Automatic initial guesses
+
+`cpu::initial_guess<T, Model>(x,y)` in `include/batchfit/cpu/initial_guess.hpp`
+returns a fixed-size parameter array, diagnostic `baseline`, and `GuessStatus`.
+It is a separate, opt-in preparation step: existing explicit-init solver calls
+and invalid-empty-init behavior are unchanged. It uses observations only, never
+true parameters, model fitting, restarts or a known noise/SNR value. Inputs must
+have matching lengths >= 5, finite values, and a strictly increasing finite-span
+x grid; nonuniform grids are supported through physical-x interpolation.
+
+Use `max(1,floor(M/10))` points at each edge. The reported baseline is the median
+of the pooled edge samples (even medians average the central two values). For
+single-peak models subtract that constant **only in a scratch feature profile**.
+For paired peaks, connect the separate left/right median levels at the median x
+of each edge group, seeding intercept and slope and detrending the feature profile
+with that line. Long peak tails can bias these estimates; LM refines them where
+the model has baseline parameters. The Gaussian, Lorentzian and pseudo-Voigt
+parameterizations deliberately retain their original no-baseline definitions.
+
+Candidate locations use a three-point [1/4,1/2,1/4] smoothed profile to reduce
+noise maxima. The primary candidate must exceed three times an edge-noise scale:
+1.4826 times the median absolute deviation after centering each edge group at
+its own median. Refine its raw index to the highest raw sample within one bin,
+take that baseline-corrected raw height as amplitude, and locate the nearest raw
+half-height crossings by linear interpolation in x. The center is a positive
+intensity-weighted local centroid over at most two bins on either side, clipped
+to the above-half-height samples when crossings are available. A stable online
+weighted mean avoids summing large absolute x coordinates. Convert measured
+FWHM to sigma by dividing by 2.354820045..., to Lorentzian HWHM by dividing by 2,
+or use the common FWHM directly for pseudo-Voigt with neutral mixing 0.5.
+
+For two peaks choose the next-highest smoothed local maximum at least three raw
+bins from the first and at physical separation >= max(3*minimum_grid_spacing,
+smaller_primary_half_width). Its prominence must exceed three edge-noise scales;
+prominence is height minus the higher of the two side minima, stopping a side
+search at a higher candidate or the boundary. This rejects noise bumps on the
+primary's wing without imposing an arbitrary relative-amplitude floor. Order the
+two components by refined center. Split their width searches at the interpeak
+valley. If overlap censors an inner half-height crossing, mirror the measured
+outer half-width; never fabricate an outer crossing. This is a symmetric-peak
+approximation for initialization, not deconvolution or a resolution guarantee.
+
+Return `no_peak` if there is no strong bracketed positive primary,
+`insufficient_peaks` if a primary exists but a second usable separated feature
+cannot be formed, and `invalid_input` for invalid input or unrepresentable output.
+Only `success` parameters may be passed to LM. Negative absorption features,
+clipped outer half-widths, weak unresolved blends and severe background curvature
+are outside this heuristic's guarantees. Guessing allocates two scratch vectors
+of M and 2*edge_count scalars, independent of the number of fits; this does not
+change the allocation-free LM iteration contract. Returned arrays own their data,
+and x/y are never modified.
+
+Verification combines independent median/centroid/interpolated-width checks,
+nonuniform/translated axes, weak 100:1 resolved pairs, strongest-two-of-three
+selection, tilted baselines, missing crossings and invalid/flat/absorption data.
+The convergence study runs **24,000** noisy guess-to-fit cases (12,000 fixed
+spectra exercised in both scalar types): 500 per model/scalar/noise/SNR
+combination, four models, float/double, Gaussian/Poisson noise and SNR
+10/20/40, with 129 points on [-5,5]. Seeds are
+`20261107 + 137*model_id + 31*SNR + 11*noise_id` using the synthetic enum values.
+Peak ranges are the generator defaults; paired intercepts are 0.3–0.5 and slopes
+-0.04–0.04 to exercise linear backgrounds while keeping Poisson means positive.
+LM uses its unchanged default 100-iteration budget, nonnegative amplitudes,
+centers inside the observed x range, widths in [grid_spacing/8, x_span] and mixing
+in [0,1]. Paired centers are **not** given truth-derived disjoint boxes.
+
+Every generated fit remains in the denominator, including failed guesses. The
+strict success metric requires both LM `converged` status and reconstructed
+noiseless signal RMS error <= 2*signal_RMS/SNR. Truth is accessed only after
+guessing/fitting to score that metric, not to seed or constrain individual fits.
+Every single-peak model/type/noise/SNR group must exceed 99%, not merely a pooled
+average; 18,000/18,000 passed. Paired rates are measured rather than forced to
+that threshold: per scalar type, 2,903/3,000 guesses succeeded, 2,902 converged
+(96.733%) and 2,900 met the signal test (96.667%) in the optimized run. Signal
+reconstruction is not a claim of unique parameters in overlapping models. README
+records the observed rates and reproducible commands; floating-point/toolchain
+changes can alter individual borderline outcomes.
 
 ## Synthetic data and NPY
 

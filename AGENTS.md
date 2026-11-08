@@ -34,6 +34,13 @@ Extend this file with the project's language-specific architecture and verificat
   state, projected box constraints and the documented stopping/status semantics.
 - Model/noise/scalar recovery, all failure statuses and allocation instrumentation
   must pass for solver changes. GPU/batch fitting remains separate future work.
+- Automatic guesses live in `include/batchfit/cpu/initial_guess.hpp`, separately
+  from LM. Preserve edge-median baselines, centroid/FWHM width conventions and
+  documented positive-emission/grid requirements. Never silently subtract a
+  baseline from solver inputs or change existing model parameter counts.
+- The fixed noisy convergence study must exceed 99% in every single-peak
+  model/scalar/noise/SNR group. Keep failed guesses in denominators, report paired
+  convergence and signal-recovery rates honestly, and never use truth to seed fits.
 - Model structs in `include/batchfit/models.hpp` must compile as both C++ and
   MSL: no C/C++ library includes or dynamic storage, thread-local parameter/output
   arrays in shaders, and no shader double types or string metadata. Keep formulas,
@@ -75,8 +82,8 @@ sh scripts/check.sh
 
 Use `clang-format -i <files>` for maintained C++/Metal files; `.clang-format` is
 authoritative. `clang-tidy` uses `.clang-tidy` plus each build's compile database.
-`tools/run_tidy.py` serially checks library code, CPU model/synthetic test
-instantiations, and the generator CLI (including Metal host code in its build).
+`tools/run_tidy.py` serially checks library code, CPU model/solver/initial-guess
+and synthetic test instantiations, and the generator CLI (including Metal host code).
 All ordinary builds/tests have at most two workers. README includes standalone
 CPU/MSL model and synthetic commands for offline verification; these do not
 replace the full gate.

@@ -55,6 +55,67 @@ with noise-scaled parameter tolerances and deliberate status failures. A separat
 global-new counter verifies zero C++ allocations across all eight model/scalar
 calls, not only the inner iteration loop.
 
+## Automatic initial guesses
+
+```cpp
+// With the x/y arrays above; the explicit-initial-parameter solver is unchanged.
+auto guess = batchfit::cpu::initial_guess<double, batchfit::models::Gaussian>(x, y);
+if (guess.status == batchfit::cpu::GuessStatus::success) {
+    auto fit = batchfit::cpu::fit_single<double, batchfit::models::Gaussian>(
+        x, y, guess.parameters, options);
+    // Inspect fit.status as usual. guess.baseline is a diagnostic estimate.
+}
+```
+
+`cpu::initial_guess<T, Model>` supports all four models in float/double on finite,
+strictly increasing x grids with at least five points. It finds **positive emission
+peaks**, estimates the baseline from medians of the outer 10% at each edge, derives
+height above baseline, refines the peak position with a local centroid, and
+linearly interpolates half-height crossings. FWHM is converted to Gaussian sigma,
+Lorentzian HWHM, or retained as pseudo-Voigt FWHM (mixing starts at 0.5).
+
+For paired peaks it seeds a linear baseline from the separate edge medians and
+chooses the two highest separated/prominent candidates, ordered by center.
+An overlapped inner half-width may be mirrored from the measured outer half;
+outer half-height crossings must exist. Weak but resolved secondary peaks are
+allowed; there is no fixed amplitude-ratio cutoff. See
+[the heuristic contract](DESIGN.md#automatic-initial-guesses) for exact rules.
+
+Check `GuessStatus`: `success`, `invalid_input`, `no_peak`, or `insufficient_peaks`.
+No input is mutated. Guess preparation uses O(M) temporary scratch storage; the
+LM call still uses only stack workspace. The baseline is used **only for feature
+extraction**: the single-peak models still have no baseline parameter, and this API
+does not silently subtract anything from y. Absorption dips, truncated outer
+half-widths, unresolved blends and signals below the prominence threshold may
+need caller-supplied initial parameters.
+
+### Measured guess-to-fit convergence
+
+The fixed-seed suite tests 500 fits per model/scalar/noise/SNR group: Gaussian
+and Poisson noise, SNR 10/20/40, 129 points on [-5,5]. All **18,000 single-peak
+cases passed** (100% for every model/type, and >99% in each individual group).
+Initial guesses and fit bounds use no true parameters. Counts include failed
+guesses; success additionally requires fitted signal RMS error <= twice the
+expected noise RMS, not just a `converged` status.
+
+Paired spectra use positive tilted baselines (intercept 0.3–0.5, slope -0.04–0.04)
+and the generator's default peak ranges, including partially overlapping peaks.
+Optimized Apple Clang 21 / Apple M4 measurements, **per scalar type**:
+
+| Model | Trials | Valid guesses | LM converged | Signal recovered |
+| --- | ---: | ---: | ---: | ---: |
+| Gaussian (float or double) | 3,000 | 3,000 | 3,000 | 3,000 (100%) |
+| Lorentzian (float or double) | 3,000 | 3,000 | 3,000 | 3,000 (100%) |
+| Pseudo-Voigt (float or double) | 3,000 | 3,000 | 3,000 | 3,000 (100%) |
+| Two Lorentzians (float or double) | 3,000 | 2,903 | 2,902 (96.733%) | 2,900 (96.667%) |
+
+Thus the paired end-to-end LM convergence rate is **96.733%**; the stricter signal
+recovery rate is **96.667%**. There were 97 failed paired guesses, one LM failure,
+and two converged fits outside the signal-error threshold per type. These are
+measured test-distribution rates, not guarantees for arbitrary spectra or proof
+of unique paired-parameter recovery. The same suite runs in CTest/GoogleTest and
+as the standalone command below.
+
 ## Synthetic datasets
 
 `batchfit_generate` streams datasets to a **new** output directory, refusing to
@@ -179,6 +240,20 @@ Formatting: `python3 tools/check_format.py`; apply fixes with
 or analyze downloaded third-party code as project source.
 
 ## Offline diagnostic check
+
+Run automatic-guess feature checks and the complete 24,000-case convergence study:
+
+```sh
+mkdir -p .agent-local/check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude src/cpu/npy.cpp src/cpu/synthetic.cpp tests/initial_guess_check.cpp -o .agent-local/check/initial_guess_check
+.agent-local/check/initial_guess_check
+rm .agent-local/check/initial_guess_check
+rmdir .agent-local/check
+```
+
+The complete study and feature checks also pass in Debug and ASan/UBSan builds;
+all three builds produced the paired counts above on this toolchain. These native
+checks do not substitute for an unavailable full CMake/GoogleTest/clang-tidy gate.
 
 The full single-fit suite and allocation instrumentation need only the existing
 C++ compiler/SDK, without CMake/GoogleTest or downloaded headers:
