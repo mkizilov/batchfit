@@ -4,8 +4,8 @@ C++20 infrastructure for fitting batches of small independent nonlinear models
 on CPU and Apple Metal. See [DESIGN.md](DESIGN.md) for the fitting API and solver
 contract. Shared Gaussian, Lorentzian, pseudo-Voigt and paired-Lorentzian models
 compile as both C++ and MSL. Single-fit/batched CPU LM solvers support float and
-double; an experimental float32 Metal v1 path uses one GPU thread per fit. See
-the Metal section for its verified scope and remaining parity limitations.
+double. Float32 Metal provides thread-, SIMD-, and threadgroup-per-fit paths with
+measured automatic dispatch. See the Metal sections for validation and limits.
 
 ```cpp
 #include <batchfit/models.hpp>
@@ -99,7 +99,7 @@ compiler is needed. This path requires macOS 15+ for explicit safe/precise math.
 
 ```cpp
 #include <batchfit/batchfit.hpp>
-batchfit::metal::Context context; // compiles embedded MSL and caches four pipelines
+batchfit::metal::Context context; // compiles embedded MSL and caches all variant pipelines
 auto batch = context.make_batch<batchfit::models::Gaussian>(N, M);
 // Fill these CPU spans directly; their storage is MTLResourceStorageModeShared:
 // batch.x()[m], batch.y()[m*N+i], batch.initial()[i*3+k].
@@ -131,22 +131,58 @@ device's buffer length limits. CPU-only builds report unavailable Metal explicit
 **Verification:** 2,832 per-fit CPU/GPU comparisons pass at parameter tolerance
 `2e-4 + 2e-4*abs(CPU)` and cost tolerance `1e-6 + 2e-5*abs(CPU)`, including bounds,
 failure statuses, SIMD tails, point-major indexing, lifetime and diagnostic tests.
-Metal API/shader validation was enabled for a native SDK test run. Because shell
-DNS still prevents metal-cpp/CMake downloads, these actual GPU checks use the
-test-only ARC driver `tests/metal_runtime_native.mm`, compiling the **production
-embedded kernel** and exercising the same public API/storage helpers. It is never
-linked into the production library. The metal-cpp host translation unit remains
-**uncompiled/unverified here**; the normal Metal CMake targets exercise it when
-dependencies are available.
+Metal API/shader validation was enabled for native SDK checks. The original
+download limitation was repaired during turn 9: the actual metal-cpp host now
+compiles and passes the production CMake/GoogleTest suite. The test-only ARC
+driver `tests/metal_runtime_native.mm` remains an independent SDK route, never a
+production fallback. Pinned tools, both build presets, clang-tidy and benchmark
+smokes now pass `scripts/check.sh`.
 
-**Known numerical limit:** the full 1.6-million-fit benchmark matches every CPU
+**Historical v1 numerical limit (original guesses):** the 1.6-million-fit benchmark matched every CPU
 status/cost, but 12 rows exceed the stricter parameter diagnostic, and two large
 paired rows also exceed the CPU reference's existing float numerical floor.
 The latter converge to poor local minima in both backends. The full benchmark
-validator deliberately exits nonzero; its tests were **not** relaxed and no CPU
-fallback was added. This v1 path is not universally parameter-equivalent yet.
+validator deliberately exited nonzero; its tests were **not** relaxed and no CPU
+fallback was added. This was not universal parameter equivalence.
 [BENCHMARKS.md](BENCHMARKS.md) records GPU timestamp and wall-time fits/s, CPU
 comparisons, mismatch counts and reproduction commands.
+
+Turn 9 identified dense-spectrum shoulder noise selecting two initial components
+on the same peak. The data-only separation rule is now a full measured width
+rather than a half-width, with a regression test that fails under the old rule.
+The new cooperative matrix keeps all fits and passes unchanged numerical budgets
+on corrected seeds. A production v1 full-matrix rerun also now exits zero with
+all CPU status/cost/reference-floor comparisons passing; nine stricter pseudo-Voigt
+diagnostic outliers remain. Historical v1 measurements above retain their original inputs
+and failure counts; this is not a claim of universal parameter identifiability.
+
+## Cooperative Metal variants and automatic dispatch
+
+`metal::KernelVariant` provides `ThreadPerFit` (v1), `SimdPerFit` (32 lanes per fit),
+`ThreadgroupPerFit` (256 threads per fit on M4), and `Automatic` (the default).
+Pass a forced variant after solver options to reproduce a comparison:
+
+```cpp
+auto result = batchfit::fit_batch<batchfit::models::Gaussian>(
+    batch, batchfit::Device::Metal, options, batchfit::metal::KernelVariant::SimdPerFit);
+// result.timings.variant reports the kernel actually used.
+```
+
+Lanes accumulate packed J^T J/J^T r terms and use `simd_sum`. One leader performs
+Cholesky/LM decisions in threadgroup scratch; `simd_broadcast` distributes the
+step. Whole-threadgroup mode combines per-SIMD partials through threadgroup
+memory/barriers. v1 names and buffers remain available, and historical v1
+benchmark helpers force v1 instead of silently switching algorithms.
+
+The empirical M4 dispatcher is model/M-specific, including a pseudo-Voigt
+SIMD-to-v1 reversal at M=2048. Its measured policy, all forced/automatic timings,
+crossover brackets and 5% performance-noise rule are in
+[DESIGN.md](DESIGN.md#cooperative-metal-v2-and-dispatch).
+`profiling/cooperative_results.csv` records the production Release matrix at
+N=16,384 and M=32,64,...,4096. Every variant has zero CPU status/parameter/cost
+errors. The final automatic policy selected the exact fastest forced median in
+29/32 cells and was within 4.01% in the three near-ties. This is a calibrated
+large-batch, point-major M4 policy, not universal tuning for small N or other GPUs.
 
 ## Metal profiling
 
@@ -208,11 +244,13 @@ Optimized Apple Clang 21 / Apple M4 measurements, **per scalar type**:
 | Gaussian (float or double) | 3,000 | 3,000 | 3,000 | 3,000 (100%) |
 | Lorentzian (float or double) | 3,000 | 3,000 | 3,000 | 3,000 (100%) |
 | Pseudo-Voigt (float or double) | 3,000 | 3,000 | 3,000 | 3,000 (100%) |
-| Two Lorentzians (float or double) | 3,000 | 2,903 | 2,902 (96.733%) | 2,900 (96.667%) |
+| Two Lorentzians (float or double) | 3,000 | 2,801 | 2,798 (93.267%) | 2,794 (93.133%) |
 
-Thus the paired end-to-end LM convergence rate is **96.733%**; the stricter signal
-recovery rate is **96.667%**. There were 97 failed paired guesses, one LM failure,
-and two converged fits outside the signal-error threshold per type. These are
+With the more conservative full-width separation rule, the paired end-to-end LM
+convergence rate is **93.267%**; the stricter signal recovery rate is **93.133%**.
+There are 199 failed paired guesses, three LM failures, and four converged fits
+outside the signal-error threshold per type. Original turn-5 half-width-rule
+measurements were 96.733%/96.667%; they accepted more ambiguous features. These are
 measured test-distribution rates, not guarantees for arbitrary spectra or proof
 of unique paired-parameter recovery. The same suite runs in CTest/GoogleTest and
 as the standalone command below.
@@ -387,7 +425,8 @@ rmdir .agent-local/check
 
 The complete study and feature checks also pass in Debug and ASan/UBSan builds;
 all three builds produced the paired counts above on this toolchain. These native
-checks do not substitute for an unavailable full CMake/GoogleTest/clang-tidy gate.
+checks do not substitute for the full CMake/GoogleTest/clang-tidy gate (verified
+after the turn-9 dependency repair).
 
 The full single-fit suite and allocation instrumentation need only the existing
 C++ compiler/SDK, without CMake/GoogleTest or downloaded headers:
@@ -459,11 +498,17 @@ passes. These standalone checks are also CTest
 targets; the float/double suites additionally run through GoogleTest. Their
 success does not remove the full-gate limitations below.
 
-This is **not** a full test pass. Initial implementation environment: shell DNS
+Historical initial implementation environment: shell DNS
 failed for GitHub, PyPI and developer.apple.com; uv/CMake/Ninja/clang-tidy were
 absent. Consequently dependency installation, uv environment creation, CMake,
 GoogleTest/Benchmark and the original metal-cpp backend could not be verified. Re-run the full
 gate after connectivity and prerequisites are available; do not bypass isolation.
+Turn 9 restored project-local dependency installation and verified the production
+CPU/metal-cpp builds, GoogleTest/CTest, clang-tidy and bounded Google Benchmark
+smokes through a successful `scripts/check.sh`. clang-tidy is pinned to 21.1.6
+to parse the current Apple SDK; it uses the actual build compiler's resource
+headers. ABI-width/style exceptions are documented in `.clang-tidy`; numerical
+tests and solver tolerances were not relaxed.
 
 The offline CPU smoke did pass with Clang 21 after explicitly supplying
 `-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`; the bare compiler

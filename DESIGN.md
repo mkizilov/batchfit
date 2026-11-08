@@ -152,7 +152,9 @@ or use the common FWHM directly for pseudo-Voigt with neutral mixing 0.5.
 
 For two peaks choose the next-highest smoothed local maximum at least three raw
 bins from the first and at physical separation >= max(3*minimum_grid_spacing,
-smaller_primary_half_width). Its prominence must exceed three edge-noise scales;
+2*smaller_primary_half_width). The full-width exclusion rejects dense-sampling
+noise maxima on the same peak's shoulder; a half-width admitted false components
+in the large-M cooperative comparison. Its prominence must exceed three edge-noise scales;
 prominence is height minus the higher of the two side minima, stopping a side
 search at a higher candidate or the boundary. This rejects noise bumps on the
 primary's wing without imposing an arbitrary relative-amplitude floor. Order the
@@ -191,8 +193,10 @@ noiseless signal RMS error <= 2*signal_RMS/SNR. Truth is accessed only after
 guessing/fitting to score that metric, not to seed or constrain individual fits.
 Every single-peak model/type/noise/SNR group must exceed 99%, not merely a pooled
 average; 18,000/18,000 passed. Paired rates are measured rather than forced to
-that threshold: per scalar type, 2,903/3,000 guesses succeeded, 2,902 converged
-(96.733%) and 2,900 met the signal test (96.667%) in the optimized run. Signal
+that threshold: with the full-width rule, per scalar type 2,801/3,000 guesses
+succeeded, 2,798 converged (93.267%) and 2,794 met the signal test (93.133%). The
+original half-width rule measured 2,903/2,902/2,900 and admitted more ambiguous
+features. Signal
 reconstruction is not a claim of unique parameters in overlapping models. README
 records the observed rates and reproducible commands; floating-point/toolchain
 changes can alter individual borderline outcomes.
@@ -473,8 +477,9 @@ The test-only installed-SDK driver `tests/metal_runtime_native.mm` implements th
 same narrow host entry points with ARC so the production embedded MSL, shared
 storage mapping, public Device API, timestamps and numerical comparisons can run
 without downloadable metal-cpp. It is not a production fallback. The actual
-metal-cpp host remains uncompiled in this environment; its RAII was source-reviewed,
-not leak-instrumented through execution. Native tests verify buffer ownership
+metal-cpp host was uncompiled during v1 recording. In turn 9, repaired DNS allowed
+local dependencies and successful production builds/CTest/GoogleTest/static
+analysis. Native tests remain an independent oracle and verify buffer ownership
 after context/batch destruction, stable spans, model/dimension rejection, empty
 batches, failure statuses, clamping, and compiler file/line diagnostics. Metal API
 and shader validation were enabled for the 2,832-fit strict suite, which keeps
@@ -486,12 +491,209 @@ model/M). All 1.6 million statuses/costs match their float CPU reference, includ
 7 pseudo-Voigt at M=32, 2 at M=512, and 3 paired at M=2048. Two paired rows also
 exceed the pre-existing CPU float floor `5e-4*(1+abs(parameter))`. Both backends
 have high-cost local minima with both components on the same peak for those rows;
-largest parameter disagreement is about 0.00516. These are **remaining parity
-limitations**, not accepted as equivalent by the benchmark gate. The gate emits
+largest parameter disagreement is about 0.00516. These were **historical parity
+limitations on the original guesses**, not accepted by the benchmark gate. The gate emits
 all timing rows, preserves mismatches and exits nonzero. No tolerance assertion
 in the strict suite was relaxed, no CPU fallback or per-fit result correction was
 introduced, and the CPU solver/initializer/baseline were left unchanged. See
-BENCHMARKS.md for timings and exact observed cases before treating v1 as universal.
+BENCHMARKS.md for timings and exact observed cases. The turn-9 initializer repair
+is documented below; a new production v1 full-matrix regression exits zero with
+all statuses, costs and reference-floor checks passing (nine stricter pseudo-Voigt
+diagnostic rows remain). This does not certify arbitrary ill-conditioned inputs.
+
+## Cooperative Metal v2 and dispatch
+
+`src/metal/cooperative.metal` adds two explicitly selectable float32 variants:
+
+- **SimdPerFit:** one 32-lane SIMD group owns a fit. Lane k traverses points
+  k,k+32,... and accumulates packed lower-triangle J^T J plus J^T r (9, 14 or 44
+  floats for P=3,4,8). `simd_sum` reduces every term. Only lane zero performs
+  checked Cholesky, projection, predicted reduction and LM acceptance/damping.
+  `simd_broadcast` shares the raw step; every lane computes the same trial
+  parameters before the cooperative trial-cost reduction.
+- **ThreadgroupPerFit:** one whole group (256 threads on this M4) owns a fit.
+  Threads split points by group width. SIMD reductions write one partial vector
+  per SIMD group to threadgroup memory; a uniform group barrier precedes the
+  leader's inter-SIMD fold. Initial/trial costs and validation flags use the same
+  two-level reduction. This avoids a full P-by-P scratch copy for every lane.
+
+The leader's two matrices/vectors and per-SIMD partials live in threadgroup
+scratch. SIMD mode partitions scratch into at most eight independent fit states
+per group. It uses **only SIMD-group barriers**, so one fit can converge/return
+without stranding another fit. Whole-group mode has one shared state and reaches
+all threadgroup barriers uniformly, including invalid/singular/zero-budget paths.
+Padding SIMD fits beyond N return uniformly within their own SIMD group. Host
+dispatch uses full threadgroups (not partial groups whose size would change fit
+indexing); fit bounds guards preserve arbitrary N. Cooperative kernels require
+pipeline execution width 32 and reject unsupported widths instead of misindexing.
+
+All solver policies, bounds, defaults and status codes remain those of the CPU
+reference. Only accumulation order changes: lane-local sums and reduction trees
+are not the serial float sum. v1 remains `KernelVariant::ThreadPerFit`, including
+its original entry-point names and profiling specializations. Historical v1
+benchmark helpers now force v1 explicitly. The public shared-buffer call accepts
+a final `KernelVariant` argument and defaults to `Automatic`; returned timings
+report the resolved variant. Layout remains point-major, with no hidden transpose,
+CPU fallback or per-fit result correction.
+
+### Data-only initialization regression uncovered by the sweep
+
+The first comparison retained the old automatic seeds and exposed collapsed
+paired local minima at dense M. Some guesses placed both components on a primary
+peak/shoulder; CPU and GPU then had high-cost, weakly determined local solutions.
+The original data are retained in `profiling/cooperative_original_seeds.csv`,
+including all error counts. These preliminary timings used three sequential
+samples per variant and are **not** the final order-balanced crossover table.
+
+This was fixed at its source, not by relaxing GPU tests: the initializer's
+data-derived exclusion distance is now twice the smaller measured primary
+half-width (a full-width separation) instead of one half-width. A new dense-grid
+shoulder-noise regression failed with the old rule (selected center -2.246 instead
+of -1.5) and passes in float/double with the fix, still finding the weaker peak at
++1.5. No truth parameters, disjoint truth-derived boxes, solver changes or output
+filters were added. Rejected guesses still remain in denominators, and benchmarks
+retain their documented fixed non-oracle fallback seeds.
+
+The synthetic observations/seeds/distributions and fitting options are unchanged;
+only data-derived initial arrays can change. Therefore the original CPU/GPU v1
+tables remain historical observations, not relabeled measurements. The new fair
+comparison times **forced v1 and both cooperative variants on the same corrected
+initial arrays**, and evaluates the CPU reference on those exact arrays. All
+128 final matrix rows have zero status/parameter/cost errors. Single-peak guess
+recovery remains 18,000/18,000; the conservative paired guess study now reports
+2,801 guesses, 2,798 converged and 2,794 signal recoveries per 3,000 trials/type
+(93.267% convergence, 93.133% signal recovery), rather than hiding extra rejections.
+
+### Production benchmark and measured crossover brackets
+
+Machine: Mac16,10 / Apple M4, 10 CPU cores, 16 GiB, Apple Clang 21.0.0. These are
+**production metal-cpp** Release runs, not the SDK adapter. Pinned local tools
+and FetchContent dependencies became available after the sandbox DNS repair.
+The production host, NS::SharedPtr path, GoogleTest and Google Benchmark smoke
+now compile/run; historical unverified-host notes describe earlier turns only.
+
+N=16,384 keeps the largest M=4,096 observation array at 268,435,456 bytes and the
+comparison bounded in memory. Peak RSS in the final run was **635,699,200 bytes
+(606.25 MiB)**. One CPU dataset and one shared GPU dataset are used during setup;
+the fit-major CPU dataset is freed before GPU timing. No datasets remain on disk.
+This is a large-batch, point-major float32 calibration; it is not a promise of
+optimal scheduling for tiny N or other GPU architectures.
+
+Every forced variant gets a full untimed batch warm-up. Five timed rounds rotate
+the order of v1/SIMD/group/automatic to reduce clock/cache ordering bias. Each
+timed output is compared against CPU outside the timing interval. GPU columns
+are command-buffer timestamps; the CSV also contains external wall time/fits/s,
+actual dispatch variant, status/cost/parameter errors and selection regret.
+Generation, guessing, buffer creation and CPU validation are excluded; existing
+buffer binding, encoding/submission and completion are included in wall time.
+No capture or debug validation was enabled for performance measurements.
+
+The following are **median GPU milliseconds**; T=v1 thread/fit, S=SIMD/fit,
+G=whole group/fit, A=automatic. The complete 128 rows are preserved in
+`profiling/cooperative_results.csv`.
+
+| Model | M | T ms | S ms | G ms | A ms | Selected |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Gaussian | 32 | 0.394 | 1.657 | 11.418 | 0.397 | T |
+| Gaussian | 64 | 0.664 | 1.851 | 10.834 | 0.660 | T |
+| Gaussian | 128 | 1.130 | 2.262 | 10.713 | 1.157 | T |
+| Gaussian | 256 | 2.183 | 3.019 | 11.859 | 2.189 | T |
+| Gaussian | 512 | 4.573 | 4.756 | 12.943 | 4.756 | S* |
+| Gaussian | 1024 | 10.452 | 10.164 | 15.471 | 10.619 | S |
+| Gaussian | 2048 | 24.614 | 33.358 | 24.749 | 24.754 | G* |
+| Gaussian | 4096 | 65.187 | 178.446 | 49.917 | 49.904 | G |
+| Lorentzian | 32 | 0.393 | 1.665 | 11.810 | 0.395 | T |
+| Lorentzian | 64 | 0.635 | 1.860 | 11.311 | 0.636 | T |
+| Lorentzian | 128 | 1.249 | 2.339 | 11.611 | 1.246 | T |
+| Lorentzian | 256 | 2.411 | 3.168 | 12.373 | 2.418 | T |
+| Lorentzian | 512 | 5.167 | 5.102 | 13.472 | 5.104 | S |
+| Lorentzian | 1024 | 13.389 | 10.435 | 16.386 | 10.641 | S |
+| Lorentzian | 2048 | 35.135 | 29.680 | 24.883 | 24.864 | G |
+| Lorentzian | 4096 | 79.371 | 182.590 | 50.039 | 50.085 | G |
+| PseudoVoigt | 32 | 0.576 | 3.011 | 22.983 | 0.572 | T |
+| PseudoVoigt | 64 | 0.871 | 3.308 | 23.011 | 0.892 | T |
+| PseudoVoigt | 128 | 1.618 | 3.979 | 24.459 | 1.673 | T |
+| PseudoVoigt | 256 | 3.089 | 5.492 | 28.308 | 3.145 | T |
+| PseudoVoigt | 512 | 6.980 | 8.997 | 30.524 | 6.873 | T |
+| PseudoVoigt | 1024 | 17.418 | 17.457 | 35.627 | 17.004 | S* |
+| PseudoVoigt | 2048 | 41.875 | 47.865 | 47.709 | 41.366 | T |
+| PseudoVoigt | 4096 | 96.431 | 215.353 | 78.271 | 78.392 | G |
+| TwoLorentzian | 32 | 3.545 | 11.427 | 90.070 | 3.608 | T |
+| TwoLorentzian | 64 | 4.687 | 11.483 | 83.222 | 4.645 | T |
+| TwoLorentzian | 128 | 7.146 | 13.234 | 84.838 | 6.982 | T |
+| TwoLorentzian | 256 | 12.958 | 16.798 | 90.225 | 13.083 | T |
+| TwoLorentzian | 512 | 28.365 | 24.216 | 94.695 | 24.224 | S |
+| TwoLorentzian | 1024 | 61.983 | 47.433 | 107.845 | 44.757 | S |
+| TwoLorentzian | 2048 | 137.978 | 123.032 | 134.240 | 122.058 | S |
+| TwoLorentzian | 4096 | 317.922 | 384.713 | 191.953 | 193.481 | G |
+
+`*` Near-ties: Gaussian 512/2048 and pseudo-Voigt 1024 have selected forced
+medians within 5% of the fastest. The benchmark treats differences below 5% as
+performance-noise ties, not numerical tolerance. Final selection is the exact
+fastest in 29/32 cells and within **4.01%** in the other three; all 32 pass the
+hard 5% selection-regret check. Actual auto-call time can differ slightly from
+the same forced pipeline's median because GPU clocks/load are uncontrolled.
+
+| Model | M-policy on measured domain | Observed crossover brackets |
+| --- | --- | --- |
+| Gaussian | T for M<512; S for 512<=M<2048; G for M>=2048 | T/S in (256,512], weak tie at 512; T/G near 2048, robust G by 4096 |
+| Lorentzian | T for M<512; S for 512<=M<2048; G for M>=2048 | T/S in (256,512]; S/G in (1024,2048] |
+| PseudoVoigt | T below 1024; S for 1024<=M<2048; T for 2048<=M<4096; G at 4096 | T/S near 1024 is weak; S loses again by 2048; G wins in (2048,4096] |
+| TwoLorentzian | T for M<512; S for 512<=M<4096; G at 4096 | T/S in (256,512]; S/G in (2048,4096] |
+
+Only the power-of-two points were measured; between them the policy is an
+empirical bucket choice, not a discovered exact continuous threshold. Outside
+M=32..4096, automatic selection conservatively uses v1. Forced variants remain
+available. Automatic also stays on GPU v1 if a cooperative pipeline's SIMD width
+is not 32; forcing a cooperative variant on that hardware reports unsupported
+width. This capability branch is source-checked but not hardware-tested here.
+SIMD mode slows sharply at M=4096 with point-major access, so a
+monotonic "larger M always SIMD" rule is wrong on this hardware. Whole-group mode
+has too much leader/barrier overhead at small M but wins at the largest sampled M.
+
+At M=4096 automatic GPU time improves over forced v1 by 1.31x Gaussian, 1.58x
+Lorentzian, 1.23x pseudo-Voigt and 1.64x paired. Small-M v1 is deliberately kept.
+The CPU baseline tables in BENCHMARKS.md use N=100,000 and original guesses, so
+these are new same-dataset **v1-v2** comparisons, not relabeled CPU-v1 speedups.
+
+### Verification and reproduction
+
+The strict unit matrix has 5,152 reference fits across all models, N=1/31/33/257
+and M=32/128/512/4096, exercised through forced T/S/G and automatic (20,608 GPU
+fit comparisons, plus failure/empty/bound cases). It keeps parameter
+atol/rtol=2e-4/2e-4 and cost atol/rtol=1e-6/2e-5. Tail masking, zero/singular/
+invalid states and fixed/active bounds all pass. Benchmark comparisons use the
+pre-existing float reference floor `5e-4*(1+abs(parameter))` for converged outputs
+and the same cost bound; no numerical threshold was weakened. Every one of five
+timed repetitions is validated; CSV error counts are worst repetition counts.
+
+The production CPU and Metal presets, GoogleTest/CTest and bounded Google
+Benchmark smoke, generator/NPY checks and clang-tidy pass `scripts/check.sh`.
+clang-tidy 21.1.6 is pinned to match the supplied compiler/SDK. It reads the actual
+build compiler's resource headers on macOS; intentional enum ABI widths and
+homogeneous shape-validated numeric parameters are documented style exceptions.
+Metal bridge analysis models metal-cpp's intentional retain/release-to-nil calls
+without disabling other memory checks. Small boundary/type/exception fixes exposed
+by the formerly unavailable static gate do not change solver math.
+Production ASan plus Metal API/shader-validation runs also pass the cooperative
+suite. A separate production v1 N=100,000 regression reran all 16 historical
+model/M cases on corrected seeds: no status, cost or reference-floor differences,
+including the former large paired failures; nine stricter pseudo-Voigt diagnostic
+rows remain. Historical v1 tables retain their original measurements.
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH"
+cmake -S . -B build/metal-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -DBATCHFIT_METAL=ON -DBATCHFIT_BUILD_TESTS=OFF
+cmake --build build/metal-release --parallel 2
+build/metal-release/batchfit_cooperative_baseline > profiling/cooperative_results.csv
+sh scripts/check.sh
+```
+
+`--smoke` uses N=257 at M=32/512, one timing sample, and checks numerical parity
+without claiming tiny-N performance calibration. Full selection-regret failures
+or any CPU parity mismatch cause a nonzero benchmark exit; no rows are omitted.
+Raw timing data, original-seed failures and exact commands are retained; all
+scratch datasets/probes are removed, and no server is required.
 
 ## Apple GPU constraints
 

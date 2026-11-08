@@ -30,11 +30,12 @@ void measure(const char *name, std::size_t count, std::size_t points, bool smoke
         }
         std::sort(times.begin(), times.begin() + repetitions);
         const double seconds = times[repetitions / 2];
-        std::cout << name << ',' << count << ',' << points << ',' << workers << ',' << repetitions
-                  << ',' << std::setprecision(9) << times.front() << ',' << seconds << ','
-                  << times[repetitions - 1] << ',' << double(count) / seconds << ','
-                  << summary.converged << ',' << data.fallback_guesses << ','
-                  << summary.mean_iterations << ',' << summary.hash << std::endl;
+        std::cout
+            << name << ',' << count << ',' << points << ',' << workers << ',' << repetitions << ','
+            << std::setprecision(9) << times.front() << ',' << seconds << ','
+            << times[repetitions - 1] << ',' << double(count) / seconds << ',' << summary.converged
+            << ',' << data.fallback_guesses << ',' << summary.mean_iterations << ',' << summary.hash
+            << std::endl; // NOLINT(performance-avoid-endl): stream untimed completed measurements
     }
 }
 } // namespace

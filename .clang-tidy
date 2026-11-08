@@ -1,3 +1,6 @@
-Checks: '-*,clang-analyzer-*,bugprone-*,performance-*,modernize-use-nullptr'
+# Enum widths are part of the shared C++/MSL ABI (and include static model counts).
+# Numeric spans/dimensions are an intentional, shape-validated scientific API.
+Checks: '-*,clang-analyzer-*,bugprone-*,-bugprone-easily-swappable-parameters,performance-*,-performance-enum-size,modernize-use-nullptr'
 WarningsAsErrors: '*'
-HeaderFilterRegex: '(include/batchfit|src)/.*'
+# Match whole project path segments, not FetchContent's "googlebenchmark-src/".
+HeaderFilterRegex: '(^|/)(include/batchfit|src)/.*'

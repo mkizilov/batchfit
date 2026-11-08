@@ -2,12 +2,14 @@
 
 import json
 import pathlib
+import shlex
 import subprocess
 import sys
 
 root = pathlib.Path(__file__).resolve().parents[1]
 build = (root / sys.argv[1]).resolve()
 entries = json.loads((build / "compile_commands.json").read_text())
+resources = {}
 for filename in sorted({entry["file"] for entry in entries}):
     source = pathlib.Path(filename).resolve()
     if root / "src" in source.parents or source in (
@@ -19,11 +21,24 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "bench/cpu_baseline.cpp",
         root / "bench/cpu_batch.cpp",
         root / "tests/metal_lm_check.cpp",
+        root / "tests/cooperative_check.cpp",
         root / "tests/metal_disabled_check.cpp",
         root / "bench/metal_baseline.cpp",
+        root / "bench/cooperative_baseline.cpp",
         root / "bench/metal_batch.cpp",
         root / "bench/metal_profile.mm",
         root / "tests/synthetic_check.cpp",
         root / "tools/generate.cpp",
     ):
-        subprocess.run(["clang-tidy", str(source), "-p", str(build)], check=True)
+        arguments = ["clang-tidy", str(source), "-p", str(build), "--quiet"]
+        if sys.platform == "darwin":
+            entry = next(entry for entry in entries if pathlib.Path(entry["file"]).resolve() == source)
+            compiler = (entry.get("arguments") or shlex.split(entry["command"]))[0]
+            # Apple's SDK wrappers require the build compiler's resource headers.
+            if compiler not in resources:
+                resources[compiler] = subprocess.check_output([compiler, "-print-resource-dir"], text=True).strip()
+            arguments.append("--extra-arg=-resource-dir=" + resources[compiler])
+        if root / "src/metal" in source.parents:
+            # metal-cpp SharedPtr intentionally sends retain/release to nil.
+            arguments.append("--config={InheritParentConfig: true, CheckOptions: {clang-analyzer-core.CallAndMessage:CXXThisMethodCall: false}}")
+        subprocess.run(arguments, check=True)

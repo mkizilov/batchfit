@@ -22,7 +22,7 @@ struct Runtime {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     id<MTLLibrary> library;
-    id<MTLComputePipelineState> pipelines[4];
+    id<MTLComputePipelineState> pipelines[12];
     std::mutex mutex;
 };
 struct Resources {
@@ -56,15 +56,17 @@ Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
                            error:&error];
         detail::require(runtime_->library != nil,
                         "compile src/metal/lm.metal with #line shared headers", error);
-        for (unsigned k = 0; k < 4; ++k) {
+        for (unsigned k = 0; k < 12; ++k) {
             id<MTLFunction> function = [runtime_->library
-                newFunctionWithName:[NSString stringWithUTF8String:detail::kernel_names[k]]];
-            detail::require(function != nil, std::string("find ") + detail::kernel_names[k]);
+                newFunctionWithName:[NSString
+                                        stringWithUTF8String:detail::variant_kernel_names[k]]];
+            detail::require(function != nil,
+                            std::string("find ") + detail::variant_kernel_names[k]);
             error = nil;
             runtime_->pipelines[k] = [runtime_->device newComputePipelineStateWithFunction:function
                                                                                      error:&error];
             detail::require(runtime_->pipelines[k] != nil,
-                            std::string("pipeline ") + detail::kernel_names[k], error);
+                            std::string("pipeline ") + detail::variant_kernel_names[k], error);
         }
     }
 }
@@ -91,37 +93,49 @@ SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p) const {
     }
 }
 
-Timings detail::run_gpu(Storage &storage, unsigned kernel) {
+Timings detail::run_gpu(Storage &storage, unsigned kernel, KernelVariant variant) {
     const auto start = std::chrono::steady_clock::now();
     const auto resources = std::static_pointer_cast<Resources>(storage.resources);
     auto &runtime = *resources->runtime;
     std::lock_guard lock(runtime.mutex);
     @autoreleasepool {
-        id<MTLComputePipelineState> pipeline = runtime.pipelines[kernel];
+        if (variant == KernelVariant::Automatic && kernel < 4 &&
+            runtime.pipelines[kernel + 4].threadExecutionWidth != 32)
+            variant = KernelVariant::ThreadPerFit;
+        const auto selected = pipeline_index(kernel, storage.points, variant);
+        id<MTLComputePipelineState> pipeline = runtime.pipelines[selected];
         const auto width = pipeline.threadExecutionWidth,
                    maximum = pipeline.maxTotalThreadsPerThreadgroup;
         require(width > 0 && maximum >= width, "pipeline thread limits");
+        require(variant == KernelVariant::ThreadPerFit || width == 32,
+                "cooperative kernels require SIMD width 32");
         const auto group = width * std::min(NSUInteger(8), maximum / width);
         if (storage.fits == 0)
             return {0,
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
-                    width, group};
+                    width, group, variant};
         NativeCapture capture(runtime.queue);
         id<MTLCommandBuffer> command = [runtime.queue commandBuffer];
         require(command != nil, "command buffer creation");
-        command.label = [NSString stringWithUTF8String:kernel_names[kernel]];
+        command.label = [NSString stringWithUTF8String:variant_kernel_names[selected]];
         id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
         require(encoder != nil, "encoder creation");
         encoder.label = command.label;
         [encoder setComputePipelineState:pipeline];
         for (unsigned k = 0; k < 8; ++k)
             [encoder setBuffer:resources->buffers[k] offset:0 atIndex:k];
-        [encoder dispatchThreads:MTLSizeMake(storage.fits, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
+        if (variant == KernelVariant::ThreadPerFit)
+            [encoder dispatchThreads:MTLSizeMake(storage.fits, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
+        else {
+            const auto per_group = variant == KernelVariant::SimdPerFit ? group / 32 : 1;
+            [encoder dispatchThreadgroups:MTLSizeMake((storage.fits - 1) / per_group + 1, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
+        }
         [encoder endEncoding];
         [command commit];
         [command waitUntilCompleted];
-        const auto context = std::string(kernel_names[kernel]) +
+        const auto context = std::string(variant_kernel_names[selected]) +
                              " N=" + std::to_string(storage.fits) +
                              " M=" + std::to_string(storage.points);
         require(command.status == MTLCommandBufferStatusCompleted,
@@ -133,7 +147,7 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel) {
         capture.finish();
         return {end - begin,
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
-                width, group};
+                width, group, variant};
     }
 }
 } // namespace batchfit::metal

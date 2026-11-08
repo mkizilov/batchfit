@@ -46,13 +46,13 @@ if(BATCHFIT_METAL)
     add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/lm_source.hpp"
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/embed_metal.py"
             "${PROJECT_BINARY_DIR}/generated/lm_source.hpp"
-        DEPENDS tools/embed_metal.py src/metal/lm.metal include/batchfit/models.hpp
+        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/cooperative.metal include/batchfit/models.hpp
             include/batchfit/metal/types.hpp VERBATIM)
     target_sources(batchfit PRIVATE "${PROJECT_BINARY_DIR}/generated/lm_source.hpp")
     add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/profile_source.hpp"
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/embed_metal.py"
             "${PROJECT_BINARY_DIR}/generated/profile_source.hpp" --profile
-        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/profile_variants.metal
+        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/cooperative.metal src/metal/profile_variants.metal
             include/batchfit/models.hpp include/batchfit/metal/types.hpp VERBATIM)
     target_sources(batchfit PRIVATE src/metal/backend.cpp)
     target_include_directories(batchfit SYSTEM PRIVATE "${metal_cpp_SOURCE_DIR}")
@@ -102,6 +102,10 @@ if(BATCHFIT_BUILD_TESTS)
         add_executable(batchfit_metal_lm_check tests/metal_lm_check.cpp)
         target_link_libraries(batchfit_metal_lm_check PRIVATE batchfit::batchfit)
         add_test(NAME metal_lm_check COMMAND batchfit_metal_lm_check)
+        add_executable(batchfit_cooperative_check tests/cooperative_check.cpp)
+        target_link_libraries(batchfit_cooperative_check PRIVATE batchfit::batchfit)
+        add_test(NAME cooperative_check COMMAND batchfit_cooperative_check)
+        set_tests_properties(cooperative_check PROPERTIES TIMEOUT 180)
     else()
         add_executable(batchfit_metal_disabled_check tests/metal_disabled_check.cpp)
         target_link_libraries(batchfit_metal_disabled_check PRIVATE batchfit::batchfit)
@@ -119,6 +123,7 @@ if(BATCHFIT_BUILD_TESTS)
     target_link_libraries(batchfit_tests PRIVATE batchfit::batchfit GTest::gtest_main)
     if(BATCHFIT_METAL)
         target_sources(batchfit_tests PRIVATE tests/metal_lm_test.cpp)
+        target_sources(batchfit_tests PRIVATE tests/cooperative_test.cpp)
     endif()
     include(GoogleTest)
     gtest_discover_tests(batchfit_tests WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" PROPERTIES PROCESSORS 2)
@@ -141,6 +146,8 @@ if(BATCHFIT_BUILD_BENCHMARKS)
         target_sources(batchfit_bench PRIVATE bench/metal_batch.cpp)
         add_executable(batchfit_metal_baseline bench/metal_baseline.cpp)
         target_link_libraries(batchfit_metal_baseline PRIVATE batchfit::batchfit)
+        add_executable(batchfit_cooperative_baseline bench/cooperative_baseline.cpp)
+        target_link_libraries(batchfit_cooperative_baseline PRIVATE batchfit::batchfit)
         enable_language(OBJCXX)
         add_executable(batchfit_metal_profile bench/metal_profile.mm
             "${PROJECT_BINARY_DIR}/generated/profile_source.hpp")

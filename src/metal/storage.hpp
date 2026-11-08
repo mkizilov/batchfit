@@ -37,4 +37,17 @@ inline std::shared_ptr<Storage> make_storage(std::size_t n, std::size_t m, unsig
 }
 inline constexpr const char *kernel_names[] = {"fit_gaussian", "fit_lorentzian", "fit_pseudo_voigt",
                                                "fit_two_lorentzian"};
+inline constexpr const char *variant_kernel_names[] = {
+    "fit_gaussian",          "fit_lorentzian",          "fit_pseudo_voigt",
+    "fit_two_lorentzian",    "fit_gaussian_simd",       "fit_lorentzian_simd",
+    "fit_pseudo_voigt_simd", "fit_two_lorentzian_simd", "fit_gaussian_group",
+    "fit_lorentzian_group",  "fit_pseudo_voigt_group",  "fit_two_lorentzian_group"};
+inline unsigned pipeline_index(unsigned model, std::size_t points, KernelVariant &variant) {
+    if (variant == KernelVariant::Automatic)
+        variant = dispatch_variant(model, points);
+    const auto value = unsigned(variant);
+    if (model >= 4 || value < 1 || value > 3)
+        throw std::invalid_argument("unknown Metal kernel variant/model");
+    return (value - 1) * 4 + model;
+}
 } // namespace batchfit::metal::detail

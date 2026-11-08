@@ -197,8 +197,9 @@ InitialGuess<T, Model<T>::parameter_count> initial_guess(std::span<const T> x,
         }
     } else {
         result.status = GuessStatus::insufficient_peaks;
+        // A half-width admits noise maxima on the same peak's shoulder at dense M.
         const T separation =
-            std::max(T(3) * spacing, std::min(primary.left_radius, primary.right_radius));
+            std::max(T(3) * spacing, T(2) * std::min(primary.left_radius, primary.right_radius));
         std::size_t second = x.size();
         T second_height = 0;
         for (std::size_t j = 1; j + 1 < x.size(); ++j) {

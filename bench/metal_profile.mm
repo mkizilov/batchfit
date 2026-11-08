@@ -40,10 +40,9 @@ struct Profiler {
             throw std::runtime_error("Metal profiling requires macOS 15 or newer");
         }
         NSError *error = nil;
-        library = [device
-            newLibraryWithSource:[NSString stringWithUTF8String:detail::profile_shader_source]
-                         options:options
-                           error:&error];
+        NSString *source = [NSString stringWithUTF8String:detail::profile_shader_source];
+        check(source != nil, "convert embedded profiling source to UTF-8");
+        library = [device newLibraryWithSource:source options:options error:&error];
         check(library != nil, "compile embedded production/profile kernels", error);
         std::cerr << "device=" << device.name.UTF8String << " counter_stage_sampling=" <<
             [device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]
@@ -146,8 +145,9 @@ struct Profiler {
                                                : base + (point_major ? "_point_half"
                                                          : half      ? "_fit_half"
                                                                      : "_fit_float");
-                id<MTLFunction> function =
-                    [library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()]];
+                NSString *function_name = [NSString stringWithUTF8String:kernel.c_str()];
+                check(function_name != nil, "convert profiling kernel name to UTF-8");
+                id<MTLFunction> function = [library newFunctionWithName:function_name];
                 check(function != nil, "find " + kernel);
                 NSError *error = nil;
                 id<MTLComputePipelineState> pipeline =
@@ -295,7 +295,9 @@ struct Profiler {
                               << ',' << maximum_iterations << ',' << (half ? input_max_error : 0)
                               << ','
                               << (half ? std::sqrt(input_squared_error / double(data.y.size())) : 0)
-                              << ',' << quantization_parameter_rows << ',' << hash << std::endl;
+                              << ',' << quantization_parameter_rows << ',' << hash
+                              << std::endl; // NOLINT(performance-avoid-endl): stream untimed
+                                            // completed experiments
                 }
                 buffers[1] = nil;
             }

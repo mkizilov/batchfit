@@ -24,13 +24,20 @@
   The timestamp counter validates duration, not occupancy or an ALU/register
   diagnosis. No missing counter values are replaced with estimates.
 
-The metal-cpp production capture/host path remains uncompiled because shell DNS
-and local dependency setup are unavailable. Real GPU measurements and capture
+At the time of this profiling run, metal-cpp compilation was blocked by DNS and
+missing local tools. Turn 9 subsequently verifies production metal-cpp builds,
+CTest/GoogleTest and static analysis. The historical GPU measurements and capture
 use the installed-SDK Objective-C++ profiling driver, with the production shader
 algorithm and the same checked shared-buffer/capture-path policies. Production
 uses `MTL::CaptureManager`; the SDK driver uses the equivalent MTLCaptureManager.
 
 ## Method and boundaries
+
+These frozen profiling inputs/results were recorded before turn 9's data-only
+paired shoulder-separation fix. Current reruns may use different paired initial
+arrays; do not silently relabel this archived CSV/trace. The new fair v1-v2
+comparison and its corrected seed rule are in DESIGN.md and
+`profiling/cooperative_results.csv`.
 
 Hardware matches `BENCHMARKS.md`: Mac model identifier **Mac16,10**, **Apple M4**,
 10 CPU cores, 16 GiB RAM, macOS 27.2 arm64, Apple Clang 21.0.0. Compiler flags are

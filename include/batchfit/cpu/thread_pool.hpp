@@ -24,7 +24,7 @@ class ThreadPool {
     void parallel_for(std::size_t count, const std::function<void(std::size_t, std::size_t)> &work);
 
   private:
-    void worker(std::stop_token stop);
+    void worker(const std::stop_token &stop);
     std::mutex submission_, mutex_;
     std::condition_variable_any ready_;
     std::condition_variable done_;

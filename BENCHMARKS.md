@@ -1,12 +1,19 @@
 # CPU baseline v1
 
+**Turn-9 verification update:** project-local prerequisites are now installed and
+the production metal-cpp, CMake, GoogleTest and Google Benchmark smoke targets
+compile/run. Earlier numbers below remain the originally recorded native-runner
+measurements, not retroactively relabeled framework results. The new production
+cooperative comparison, input-separation fix and dispatch policy are recorded in
+DESIGN.md and `profiling/cooperative_results.csv`.
+
 These are **measured native wall-clock results**, not fabricated Google Benchmark
 output. Google Benchmark 1.9.4 registrations are implemented in
-`bench/cpu_batch.cpp`, but this sandbox cannot download it (shell DNS fails and
-CMake/uv are absent). The dependency-free `bench/cpu_baseline.cpp` uses the same
+`bench/cpu_batch.cpp`; at the time of this recording shell DNS failed and local
+CMake/uv were absent. The dependency-free `bench/cpu_baseline.cpp` uses the same
 `bench/cpu_workload.hpp`, `cpu::fit_batch`, initial guesses, options and persistent
-thread pool. Google Benchmark execution remains **unverified** until local
-dependency setup is available.
+thread pool. The framework smoke was subsequently verified in turn 9; this
+historical full-matrix table was not regenerated with the framework.
 
 Every subsequent GPU performance step must compare against this workload and
 these CPU baselines, reporting accuracy/status changes as well as throughput.
@@ -137,11 +144,11 @@ matrix is an explicit performance step, never an ordinary Debug test workload.
 
 ## Metal v1: one thread per fit
 
-**Experimental, with remaining parameter-parity failures.** The table below is
+**Historical v1 recording, with its original parameter-parity failures.** The table below is
 real GPU execution of the production embedded `src/metal/lm.metal`, driven through
 the public shared-batch `Device::Metal` API by the test-only native SDK adapter.
 The metal-cpp production host and Google Benchmark wrappers could not be compiled
-here because downloads remain unavailable. Do not label these as metal-cpp or
+then because downloads were unavailable. Do not label these figures as metal-cpp or
 Google Benchmark execution results. No CPU fitting fallback/correction is used.
 
 Machine/compiler match the CPU baseline above. Context creation embeds/compiles
@@ -207,13 +214,22 @@ CPU dataset is released before timing. Largest observation payloads total
   and deliberately returns exit 1 for the two reference-floor violations. The
   Google Benchmark wrapper marks the corresponding case with SkipWithError.
   Neither CPU reference, initializer, options nor strict tests were changed to
-  manufacture a pass. The full benchmark validator remains red.
+  manufacture a pass. That original-input benchmark validator was red.
 
 Observed timing is not a promise of speedup on every device. For the largest
 paired case GPU/wall medians were 0.722585/0.726661 s. Source/host compilation,
 zero-copy lifetime, hardware validation and numerical parity are separate claims:
 the native driver verifies the latter shared-kernel/API behavior, not executed
-NS::SharedPtr production ownership. That production path remains unverified.
+NS::SharedPtr production ownership. Production compilation/execution was subsequently
+verified in turn 9; the historical timing row still comes from the native driver.
+
+**Current regression update:** after the data-only shoulder-separation fix, the
+production v1 N=100,000 matrix was rerun. All 16 cases pass CPU status, cost and
+reference-floor checks, with zero paired parameter outliers at M=2048. Nine
+pseudo-Voigt rows still exceed the stricter diagnostic but remain within the
+unchanged float reference floor. The current full benchmark exits zero. Earlier
+failure counts/figures above are preserved rather than silently overwritten;
+new guesses mean a new comparison, not retroactive qualification of old rows.
 
 ### Reproduce Metal measurements
 
@@ -229,11 +245,11 @@ The native SDK fallback used here is explicit and test-only:
 mkdir -p .agent-local/check/generated
 python3 tools/embed_metal.py .agent-local/check/generated/lm_source.hpp
 clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O3 -DNDEBUG -pthread -fobjc-arc -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/metal -I.agent-local/check/generated -x objective-c++ tests/metal_runtime_native.mm src/cpu/thread_pool.cpp src/cpu/npy.cpp src/cpu/synthetic.cpp bench/metal_baseline.cpp -framework Foundation -framework Metal -o .agent-local/check/batchfit_metal_baseline
-.agent-local/check/batchfit_metal_baseline  # current v1: timings + parity diagnostics, exits 1
+.agent-local/check/batchfit_metal_baseline  # original turn-7 guesses exited 1; corrected turn-9 seeds pass
 rm .agent-local/check/batchfit_metal_baseline .agent-local/check/generated/lm_source.hpp
 rmdir .agent-local/check/generated .agent-local/check
 ```
 
 `--smoke` instead runs 257 fits at M=32 for each model and passes parity. Keep the
-known full-matrix failure visible until an actual numerical fix is verified;
-do not substitute smoke success for full-matrix equivalence.
+historical full-matrix failure visible. The turn-9 production full-matrix rerun,
+not smoke success alone, establishes the corrected-seed regression result.

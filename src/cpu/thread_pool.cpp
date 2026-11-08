@@ -14,7 +14,7 @@ ThreadPool::ThreadPool(std::size_t workers) {
         throw std::invalid_argument("ThreadPool requires at least one worker");
     workers_.reserve(workers);
     for (std::size_t i = 0; i < workers; ++i)
-        workers_.emplace_back([this](std::stop_token stop) { worker(stop); });
+        workers_.emplace_back([this](const std::stop_token &stop) { worker(stop); });
 }
 
 ThreadPool::~ThreadPool() {
@@ -48,7 +48,7 @@ void ThreadPool::parallel_for(std::size_t count,
         std::rethrow_exception(failure_);
 }
 
-void ThreadPool::worker(std::stop_token stop) {
+void ThreadPool::worker(const std::stop_token &stop) {
     current_pool = this;
     std::size_t observed = 0;
     std::unique_lock lock(mutex_);

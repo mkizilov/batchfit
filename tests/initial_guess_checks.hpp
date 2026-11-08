@@ -109,6 +109,20 @@ template <typename T> void paired_features() {
     require(largest.status == cpu::GuessStatus::success, "two largest of three separated peaks");
     near(largest.parameters[1], -3, 0.06, 0, "largest peak selected");
     near(largest.parameters[4], 0, 0.06, 0, "second-largest peak selected");
+    std::vector<T> dense_x(2049), dense_y(2049);
+    const std::array<T, 8> separated{T(3), T(-1.5), T(0.7), T(1), T(1.5), T(0.7), T(0.4), T(0)};
+    const std::array<T, 3> shoulder_noise{T(0.3), T(-2.25), T(0.015)};
+    for (std::size_t j = 0; j < dense_x.size(); ++j) {
+        dense_x[j] = T(-5) + T(10) * T(j) / T(dense_x.size() - 1);
+        dense_y[j] = models::TwoLorentzian<T>::eval(dense_x[j], separated.data()) +
+                     models::Gaussian<T>::eval(dense_x[j], shoulder_noise.data());
+    }
+    const auto shoulder = cpu::initial_guess<T, models::TwoLorentzian>(dense_x, dense_y);
+    require(shoulder.status == cpu::GuessStatus::success,
+            "dense paired spectrum with shoulder noise");
+    near(shoulder.parameters[1], -1.5, 0.08, 0,
+         "shoulder bump is not a separate primary component");
+    near(shoulder.parameters[4], 1.5, 0.08, 0, "weaker separated peak survives shoulder noise");
 }
 
 template <typename T> void invalid_and_unresolved() {

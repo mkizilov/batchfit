@@ -71,13 +71,14 @@ void measure(batchfit::metal::Context &context, const char *name, std::size_t n,
     std::sort(gpu_times.begin(), gpu_times.begin() + repeats);
     std::sort(wall_times.begin(), wall_times.begin() + repeats);
     const double gpu = gpu_times[repeats / 2], wall = wall_times[repeats / 2];
-    std::cout << name << ',' << n << ',' << m << ',' << repeats << ',' << std::setprecision(9)
-              << gpu << ',' << wall << ',' << double(n) / gpu << ',' << double(n) / wall << ','
-              << geometry.simd_width << ',' << geometry.threads_per_threadgroup << ',' << converged
-              << ',' << status_differences << ',' << parameter_differences << ',' << chi_differences
-              << ',' << fallbacks << ',' << max_parameter_absolute << ',' << max_parameter_scaled
-              << ',' << converged_strict_differences << ',' << reference_floor_differences
-              << std::endl;
+    std::cout
+        << name << ',' << n << ',' << m << ',' << repeats << ',' << std::setprecision(9) << gpu
+        << ',' << wall << ',' << double(n) / gpu << ',' << double(n) / wall << ','
+        << geometry.simd_width << ',' << geometry.threads_per_threadgroup << ',' << converged << ','
+        << status_differences << ',' << parameter_differences << ',' << chi_differences << ','
+        << fallbacks << ',' << max_parameter_absolute << ',' << max_parameter_scaled << ','
+        << converged_strict_differences << ',' << reference_floor_differences
+        << std::endl; // NOLINT(performance-avoid-endl): preserve timings before a parity exception
     if (parity_failed)
         throw std::runtime_error(
             std::string(name) + " M=" + std::to_string(m) +

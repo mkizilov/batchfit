@@ -24,7 +24,7 @@ struct Runtime {
     NS::SharedPtr<MTL::Device> device;
     NS::SharedPtr<MTL::CommandQueue> queue;
     NS::SharedPtr<MTL::Library> library;
-    std::array<NS::SharedPtr<MTL::ComputePipelineState>, 4> pipelines;
+    std::array<NS::SharedPtr<MTL::ComputePipelineState>, 12> pipelines;
     std::mutex mutex;
 };
 struct Resources {
@@ -56,16 +56,16 @@ Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
     detail::require(runtime_->library.get() != nullptr,
                     "compile src/metal/lm.metal and embedded shared headers (#line preserved)",
                     error);
-    for (unsigned k = 0; k < 4; ++k) {
+    for (unsigned k = 0; k < 12; ++k) {
         const auto function = NS::TransferPtr(runtime_->library->newFunction(
-            NS::String::string(detail::kernel_names[k], NS::UTF8StringEncoding)));
+            NS::String::string(detail::variant_kernel_names[k], NS::UTF8StringEncoding)));
         detail::require(function.get() != nullptr,
-                        std::string("find kernel ") + detail::kernel_names[k]);
+                        std::string("find kernel ") + detail::variant_kernel_names[k]);
         error = nullptr;
         runtime_->pipelines[k] =
             NS::TransferPtr(runtime_->device->newComputePipelineState(function.get(), &error));
         detail::require(runtime_->pipelines[k].get() != nullptr,
-                        std::string("create pipeline ") + detail::kernel_names[k], error);
+                        std::string("create pipeline ") + detail::variant_kernel_names[k], error);
     }
 }
 
@@ -91,36 +91,49 @@ SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p) const {
     return SharedBatch(detail::make_storage(n, m, p, pointers, resources));
 }
 
-Timings detail::run_gpu(Storage &storage, unsigned kernel) {
+Timings detail::run_gpu(Storage &storage, unsigned kernel, KernelVariant variant) {
     const auto start = std::chrono::steady_clock::now();
     const auto resources = std::static_pointer_cast<Resources>(storage.resources);
     auto &runtime = *resources->runtime;
     std::lock_guard lock(runtime.mutex);
     const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-    const auto &pipeline = runtime.pipelines.at(kernel);
+    if (variant == KernelVariant::Automatic && kernel < 4 &&
+        runtime.pipelines[kernel + 4]->threadExecutionWidth() != 32)
+        variant = KernelVariant::ThreadPerFit;
+    const auto selected = pipeline_index(kernel, storage.points, variant);
+    const auto &pipeline = runtime.pipelines.at(selected);
     const auto width = pipeline->threadExecutionWidth();
     const auto maximum = pipeline->maxTotalThreadsPerThreadgroup();
     require(width > 0 && maximum >= width,
-            "invalid thread limits for " + std::string(kernel_names[kernel]));
+            "invalid thread limits for " + std::string(variant_kernel_names[selected]));
+    require(variant == KernelVariant::ThreadPerFit || width == 32,
+            "cooperative kernels require SIMD width 32");
     const auto group = width * std::min(NS::UInteger(8), maximum / width);
     if (storage.fits == 0)
         return {0, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
-                width, group};
+                width, group, variant};
     Capture capture(runtime.queue.get());
     const auto command = NS::RetainPtr(runtime.queue->commandBuffer());
     require(command.get() != nullptr, "create command buffer");
-    command->setLabel(NS::String::string(kernel_names[kernel], NS::UTF8StringEncoding));
+    command->setLabel(NS::String::string(variant_kernel_names[selected], NS::UTF8StringEncoding));
     const auto encoder = NS::RetainPtr(command->computeCommandEncoder());
     require(encoder.get() != nullptr, "create compute encoder");
-    encoder->setLabel(NS::String::string(kernel_names[kernel], NS::UTF8StringEncoding));
+    encoder->setLabel(NS::String::string(variant_kernel_names[selected], NS::UTF8StringEncoding));
     encoder->setComputePipelineState(pipeline.get());
     for (unsigned k = 0; k < 8; ++k)
         encoder->setBuffer(resources->buffers[k].get(), 0, k);
-    encoder->dispatchThreads(MTL::Size(storage.fits, 1, 1), MTL::Size(group, 1, 1));
+    if (variant == KernelVariant::ThreadPerFit)
+        encoder->dispatchThreads(MTL::Size(storage.fits, 1, 1), MTL::Size(group, 1, 1));
+    else {
+        const auto per_group = variant == KernelVariant::SimdPerFit ? group / 32 : 1;
+        encoder->dispatchThreadgroups(MTL::Size((storage.fits - 1) / per_group + 1, 1, 1),
+                                      MTL::Size(group, 1, 1));
+    }
     encoder->endEncoding();
     command->commit();
     command->waitUntilCompleted();
-    const auto context = std::string(kernel_names[kernel]) + " N=" + std::to_string(storage.fits) +
+    const auto context = std::string(variant_kernel_names[selected]) +
+                         " N=" + std::to_string(storage.fits) +
                          " M=" + std::to_string(storage.points);
     require(command->status() == MTL::CommandBufferStatusCompleted,
             context + " command status=" + std::to_string(command->status()), command->error());
@@ -131,7 +144,7 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel) {
     capture.finish();
     return {end - begin,
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(), width,
-            group};
+            group, variant};
 }
 } // namespace batchfit::metal
 #else
@@ -143,7 +156,7 @@ Context::Context() {
 SharedBatch Context::allocate(std::size_t, std::size_t, unsigned) const {
     throw std::runtime_error("Device::Metal is unavailable");
 }
-Timings detail::run_gpu(Storage &, unsigned) {
+Timings detail::run_gpu(Storage &, unsigned, KernelVariant) {
     throw std::runtime_error("Device::Metal is unavailable");
 }
 } // namespace batchfit::metal

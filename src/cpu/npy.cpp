@@ -103,7 +103,7 @@ Reader::Reader(const std::filesystem::path &path) : path_(path), stream_(path, s
     stream_.read(reinterpret_cast<char *>(prefix), sizeof(prefix));
     require(bool(stream_) && std::memcmp(prefix, "\x93NUMPY\x01\x00", 8) == 0, path_,
             "expected NPY v1.0 magic/version");
-    const auto length = static_cast<std::size_t>(prefix[8]) + 256 * prefix[9];
+    const auto length = static_cast<std::size_t>(prefix[8]) + std::size_t(256) * prefix[9];
     require(length > 0 && length <= 4096 && (10 + length) % 16 == 0, path_,
             "invalid or oversized header length/alignment");
     std::string header(length, '\0');

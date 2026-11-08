@@ -12,9 +12,41 @@
 namespace batchfit {
 enum class Device { Cpu, Metal };
 namespace metal {
+enum class KernelVariant { Automatic, ThreadPerFit, SimdPerFit, ThreadgroupPerFit };
+inline KernelVariant dispatch_variant(unsigned model, std::size_t points) {
+    if (model >= 4)
+        throw std::invalid_argument("unknown Metal model");
+    // M4, point-major float32, large-batch measurements; see DESIGN.md.
+    if (points < 32 || points > 4096)
+        return KernelVariant::ThreadPerFit;
+    switch (model) {
+    case 0:
+    case 1:
+        if (points < 512)
+            return KernelVariant::ThreadPerFit;
+        if (points < 2048)
+            return KernelVariant::SimdPerFit;
+        return KernelVariant::ThreadgroupPerFit;
+    case 2:
+        if (points < 1024)
+            return KernelVariant::ThreadPerFit;
+        if (points < 2048)
+            return KernelVariant::SimdPerFit;
+        if (points < 4096)
+            return KernelVariant::ThreadPerFit;
+        return KernelVariant::ThreadgroupPerFit;
+    default:
+        if (points < 512)
+            return KernelVariant::ThreadPerFit;
+        if (points < 4096)
+            return KernelVariant::SimdPerFit;
+        return KernelVariant::ThreadgroupPerFit;
+    }
+}
 struct Timings {
     double gpu_seconds = 0, wall_seconds = 0;
     std::size_t simd_width = 0, threads_per_threadgroup = 0;
+    KernelVariant variant = KernelVariant::ThreadPerFit;
 };
 namespace detail {
 struct Runtime;
@@ -27,7 +59,7 @@ struct Storage {
     Config *config;
     std::shared_ptr<void> resources;
 };
-Timings run_gpu(Storage &storage, unsigned kernel);
+Timings run_gpu(Storage &storage, unsigned kernel, KernelVariant variant);
 template <template <typename> class Model> constexpr unsigned kernel_index() {
     if constexpr (std::is_same_v<Model<float>, models::Gaussian<float>>)
         return 0;
@@ -96,7 +128,8 @@ struct Result {
 template <template <typename> class Model>
 metal::Result
 fit_batch(metal::SharedBatch &batch, Device device,
-          const cpu::SolverOptions<float, Model<float>::parameter_count> &options = {}) {
+          const cpu::SolverOptions<float, Model<float>::parameter_count> &options = {},
+          metal::KernelVariant variant = metal::KernelVariant::Automatic) {
     constexpr unsigned p = Model<float>::parameter_count;
     constexpr unsigned kernel = metal::detail::kernel_index<Model>();
     const auto start = std::chrono::steady_clock::now();
@@ -117,7 +150,7 @@ fit_batch(metal::SharedBatch &batch, Device device,
         config.upper[k] = options.upper[k];
     }
     if (device == Device::Metal) {
-        auto timings = metal::detail::run_gpu(data, kernel);
+        auto timings = metal::detail::run_gpu(data, kernel, variant);
         timings.wall_seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         return {batch, timings};

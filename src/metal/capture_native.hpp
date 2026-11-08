@@ -18,8 +18,10 @@ class NativeCapture {
         MTLCaptureDescriptor *descriptor = [[MTLCaptureDescriptor alloc] init];
         descriptor.captureObject = queue;
         descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
-        descriptor.outputURL =
-            [NSURL fileURLWithPath:[NSString stringWithUTF8String:path_.path().c_str()]];
+        NSString *output_path = [NSString stringWithUTF8String:path_.path().c_str()];
+        if (!output_path)
+            throw std::runtime_error("GPU capture path is not valid UTF-8");
+        descriptor.outputURL = [NSURL fileURLWithPath:output_path];
         NSError *error = nil;
         if (![manager_ startCaptureWithDescriptor:descriptor error:&error])
             throw std::runtime_error(

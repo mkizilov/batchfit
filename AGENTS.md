@@ -67,9 +67,10 @@ Extend this file with the project's language-specific architecture and verificat
 - NPY I/O is our narrow v1.0 float32 C-order implementation. Validate file headers,
   shape/byte counts and integer overflow; do not add implicit dtype conversions.
   The CLI must refuse preexisting output directories and roll back its own failures.
-- Metal fitting uses `include/batchfit/metal/batch.hpp` and `src/metal/lm.metal`:
-  point-major shared observations, direct shared-buffer spans, fixed private arrays
-  and one thread per fit. Preserve embedded #line diagnostics, safe/precise math,
+- Metal fitting uses `include/batchfit/metal/batch.hpp`, `src/metal/lm.metal` and
+  `src/metal/cooperative.metal`: point-major shared observations, direct shared
+  spans, v1/thread, SIMD/fit and threadgroup/fit. Preserve uniform collective
+  barriers, the forced-v1 path, #line diagnostics, safe/precise math,
   pipeline-derived groups, checked command status/error, and both timing domains.
 - `tests/metal_runtime_native.mm` is test-only SDK verification when metal-cpp
   downloads fail; never link it into production or claim it verifies NS::SharedPtr
@@ -79,12 +80,21 @@ Extend this file with the project's language-specific architecture and verificat
   requested traces for inspection, never commit their binary bundles.
 - `PROFILING.md` and `profiling/results.csv` distinguish measured timestamps,
   iteration proxies and unavailable Xcode metrics. Do not invent occupancy,
-  register counts, line costs or limiter counters; keep default v1 behavior intact.
+  register counts, line costs or limiter counters; keep forced-v1 behavior intact.
+- Automatic variant selection uses the measured M4 model/M policy in DESIGN.md.
+  Benchmark forced variants and automatic on identical data, keep all numerical
+  mismatches, and enforce the documented 5% performance-noise tie budget. Do not
+  relabel historical v1 input/seed measurements after initializer fixes.
+- Preserve the dense shoulder-noise initial-guess regression: secondary candidates
+  must be a full measured width away, not another noise maximum on the same peak.
 
 ## Setup and verification
 
 Keep uv 0.9.8 local (see README); `sh scripts/bootstrap.sh` creates `.venv` using
 uv and exact tool pins in `pyproject.toml`. Preserve supplied environment paths.
+clang-tidy 21.1.6 matches the current Apple SDK; the runner uses the actual build
+compiler's resource headers. `.clang-tidy` documents intentional ABI/style
+exceptions; the Metal bridge alone models Objective-C nil messaging explicitly.
 Use `export PATH="$PWD/.venv/bin:$PATH"` before manual build commands.
 
 ```sh

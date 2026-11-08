@@ -21,6 +21,10 @@ template <template <typename> class Model> void metal_lm(benchmark::State &state
         state.SetIterationTime(result->timings.gpu_seconds);
         benchmark::DoNotOptimize(result->parameters.data());
     }
+    if (!result) {
+        state.SkipWithError("Metal benchmark did not execute an iteration");
+        return;
+    }
     std::size_t status_errors = 0, parameter_errors = 0, cost_errors = 0;
     constexpr unsigned p = Model<float>::parameter_count;
     for (std::size_t i = 0; i < n; ++i) {
