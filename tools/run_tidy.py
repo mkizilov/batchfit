@@ -22,13 +22,17 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "bench/cpu_batch.cpp",
         root / "tests/metal_lm_check.cpp",
         root / "tests/cooperative_check.cpp",
+        root / "tests/mmap_check.cpp",
+        root / "tests/pipeline_check.cpp",
         root / "tests/metal_disabled_check.cpp",
         root / "bench/metal_baseline.cpp",
         root / "bench/cooperative_baseline.cpp",
+        root / "bench/pipeline_baseline.cpp",
         root / "bench/metal_batch.cpp",
         root / "bench/metal_profile.mm",
         root / "tests/synthetic_check.cpp",
         root / "tools/generate.cpp",
+        root / "tools/fit_npy.cpp",
     ):
         arguments = ["clang-tidy", str(source), "-p", str(build), "--quiet"]
         if sys.platform == "darwin":
@@ -38,7 +42,7 @@ for filename in sorted({entry["file"] for entry in entries}):
             if compiler not in resources:
                 resources[compiler] = subprocess.check_output([compiler, "-print-resource-dir"], text=True).strip()
             arguments.append("--extra-arg=-resource-dir=" + resources[compiler])
-        if root / "src/metal" in source.parents:
+        if source in (root / "src/metal/backend.cpp", root / "src/metal/runtime.cpp"):
             # metal-cpp SharedPtr intentionally sends retain/release to nil.
             arguments.append("--config={InheritParentConfig: true, CheckOptions: {clang-analyzer-core.CallAndMessage:CXXThisMethodCall: false}}")
         subprocess.run(arguments, check=True)

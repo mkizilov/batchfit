@@ -1,0 +1,5 @@
+# Apple's metal-cpp intentionally invokes its Objective-C nil-message bridge with
+# null C++ receivers (e.g. retain/release on empty NS::SharedPtr). Keep only that
+# upstream inline bridge out of UBSan; all batchfit code remains instrumented.
+[undefined]
+src:*/third_party/metal-cpp/Foundation/NSObject.hpp

@@ -253,3 +253,104 @@ rmdir .agent-local/check/generated .agent-local/check
 `--smoke` instead runs 257 fits at M=32 for each model and passes parity. Keep the
 historical full-matrix failure visible. The turn-9 production full-matrix rerun,
 not smoke success alone, establishes the corrected-seed regression result.
+
+## Out-of-core pipeline (turn 10)
+
+These production Release measurements are **input-file to CPU-verified streamed
+results**, including NPY validation, window mapping/page faults, conversion,
+initial-file reads, point-major transpose, shared allocation, async submission,
+completion/readback, every-output checking and event-stream flush. Shader/library
+compilation and dataset generation are outside that interval. The benchmark
+consumer verifies rather than persists full result arrays; the CLI separately
+tests streamed NPY output/flush. Only two CPU workers are used. No concurrent
+batchfit build/test ran during a measurement; OS disk/cache load is not controlled,
+and no global cache flush or OS settings were used.
+
+Two independently fully written files have **10,240,000,128 bytes** each (10.24 GB,
+9.54 GiB), not sparse extents or a header pretending to be a large dataset:
+
+- float64: N=312,500, M=4,096, automatically selected threadgroup-per-fit.
+- native float32: N=5,000,000, M=512, automatically selected SIMD-per-fit.
+
+Both use TwoLorentzian with baseline, 64 deterministic noiseless spectral
+patterns repeated across all rows, and initial guesses derived from each pattern's
+stored float32 observations, then streamed from `initial.npy`. Patterns are
+evaluated in double before explicit float32 conversion for CPU/GPU fitting.
+Cached `fit_single<float>` results for those identical inputs allow checking
+**every fit**, not a sample, with no full-N reference/output allocation. Parameter
+tolerance stays `2e-4 + 2e-4*abs(CPU)` and chi-squared `1e-6 + 2e-5*abs(CPU)`;
+status must match. No rejected/failed row is dropped. Success-path checking avoids
+formatting millions of diagnostic strings, but failures retain detailed messages.
+
+The automatic three-slot chunk is also used unchanged for the one-slot comparison.
+Both depths use the same read-ahead policy, so depth 1 can already overlap a
+next-chunk read-ahead request with current GPU work; it is **not** a fully
+serialized I/O baseline. Depth 3 permits preparation/readback overlap and at most
+three committed buffers, not a promise that the producer fills them on every
+workload. Small smoke tests actually reach three pending buffers. Disk-bound
+full-file runs and timestamp overlap are qualified in PROFILING.md.
+
+This is not the original noisy CPU-baseline workload (different N/M, data and
+on-disk dtype); no unsupported GPU-versus-CPU speedup is inferred from comparing
+these numbers to earlier tables. The file is larger than the configured working
+budget, but still below this Mac's **16 GiB physical RAM**. Bounded process RSS
+does not imply bounded global/reclaimable filesystem cache, a cold-cache result,
+or a measurement on a machine with less than 10 GB total RAM.
+
+### Recorded results — Apple M4, final production callback bridge
+
+One final run per cell, same file/chunk/initials within each comparison; these are
+not medians or a cold-cache benchmark. MaxBufferLength was **9,534,832,640 bytes**;
+recommended working set **12,713,115,648 bytes**. Automatic chunks were 2,560 fits
+(float64, 123 chunks) and 25,344 fits (float32, 198 chunks), including short tails.
+
+| Input / M / fits | Slots | Wall s | Fits/s | Input GB/s | Observed peak pending |
+|---|---:|---:|---:|---:|---:|
+| float64 / 4096 / 312,500 | 1 | 7.494164 | 41,699 | 1.3664 | 1 |
+| float64 / 4096 / 312,500 | 3 | 8.165082 | 38,273 | 1.2541 | 1 |
+| float32 / 512 / 5,000,000 | 1 | 11.580432 | 431,763 | 0.8843 | 1 |
+| float32 / 512 / 5,000,000 | 3 | 10.469354 | 477,584 | 0.9781 | 1 |
+
+All **10,625,000** per-fit comparisons across those four rows passed status,
+parameter and cost checks; all fits converged. No CPU fallback. Program peak RSS,
+including generation and both depths, was **258,195,456 bytes / 246.23 MiB** for
+float64 and **274,153,472 bytes / 261.45 MiB** for float32. Three-slot shared payloads
+were 126,462,228 and 161,498,388 bytes; largest single mappings 83,886,208 and
+51,904,640 bytes, respectively. These remain bounded, not proportional to N.
+Allocated on-disk bytes were 10,242,494,464 / 10,250,883,072, confirming dense files.
+Generation/write/close plus small CPU reference preparation took 6.1332 / 7.4724 s,
+outside the fitting interval. Both large datasets were removed after the runs.
+
+The native-float32 three-slot run achieved **1.106×** the one-slot throughput;
+the float64 three-slot run was **8.95% slower** in wall time. Do not claim a
+universal pipelining speedup or sustained three-buffer occupancy from these data.
+The producer remained page-in/I/O limited: in the float64 three-slot run,
+map/convert took 5.320 s of 6.034 s preparation; transpose took 0.680 s. Float32
+map/convert took 7.720 s of 8.966 s preparation; transpose took 1.037 s. Native
+per-program counters recorded roughly 625k/635k major faults per run. CPU time
+and wall time distinguish waiting/kernel overhead from arithmetic conversion.
+Large-file observed peak pending was one; the unchanged small-memory smoke
+actually reaches three. Three slots provide capacity, not faster disk bandwidth.
+Earlier diagnostic runs varied substantially with mapping advice/cache/load;
+only the final-source measurements above are used as the reproducible baseline.
+
+### Reproduction commands
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH"
+cmake -S . -B build/metal-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DBATCHFIT_METAL=ON -DBATCHFIT_BUILD_TESTS=OFF -DBATCHFIT_BUILD_BENCHMARKS=ON
+cmake --build build/metal-release --target batchfit_pipeline_baseline --parallel 2
+build/metal-release/batchfit_pipeline_baseline
+build/metal-release/batchfit_pipeline_baseline --float32
+```
+
+Each runner checks free space, creates only its uniquely owned
+`.agent-local/pipeline-benchmark-*` directory, writes/closes the dense files,
+executes depths 1 and 3, prints actual byte allocation/RSS/counters and removes
+the dataset on completion/failure. Existing `profiling/pipeline_events.json` and
+`profiling/pipeline_float32_events.json` are refused: archive them deliberately
+before rerunning. Retained event JSON is application/Mach instrumentation, **not
+Metal System Trace**. Add `--smoke` for the bounded ordinary gate; it never creates
+a multi-GB dataset. A forced process kill may require cleanup of that exact owned
+directory after verifying the process has ended.

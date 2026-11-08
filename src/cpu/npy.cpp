@@ -1,5 +1,7 @@
 #include <batchfit/npy.hpp>
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <charconv>
 #include <cstdint>
@@ -19,7 +21,8 @@ void require(bool valid, const std::filesystem::path &path, const char *operatio
     }
 }
 
-std::size_t count(const std::vector<std::size_t> &shape, const std::filesystem::path &path) {
+std::size_t count(const std::vector<std::size_t> &shape, const std::filesystem::path &path,
+                  std::size_t width) {
     require(shape.size() == 1 || shape.size() == 2, path, "only rank 1/2 arrays are supported");
     std::size_t result = 1;
     for (auto dimension : shape) {
@@ -27,7 +30,7 @@ std::size_t count(const std::vector<std::size_t> &shape, const std::filesystem::
                 path, "shape overflows size_t");
         result *= dimension;
     }
-    require(result <= static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) / 4,
+    require(result <= static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) / width,
             path, "array byte count overflows streamsize");
     return result;
 }
@@ -40,16 +43,62 @@ std::size_t dimension(const std::string &text, const std::filesystem::path &path
     return result;
 }
 
-[[maybe_unused]] float swap_float(float value) {
-    auto bits = std::bit_cast<std::uint32_t>(value);
-    bits = (bits >> 24) | ((bits >> 8) & 0xFF00U) | ((bits << 8) & 0xFF0000U) | (bits << 24);
-    return std::bit_cast<float>(bits);
+template <typename T> T swap_scalar(T value) {
+    auto bytes = std::bit_cast<std::array<std::byte, sizeof(T)>>(value);
+    std::reverse(bytes.begin(), bytes.end());
+    return std::bit_cast<T>(bytes);
+}
+Header read_header(std::ifstream &stream, const std::filesystem::path &path) {
+    require(bool(stream), path, "open for reading failed");
+    unsigned char prefix[10]{};
+    stream.read(reinterpret_cast<char *>(prefix), sizeof(prefix));
+    require(bool(stream) && std::memcmp(prefix, "\x93NUMPY\x01\x00", 8) == 0, path,
+            "expected NPY v1.0 magic/version");
+    const auto length = std::size_t(prefix[8]) + std::size_t(256) * prefix[9];
+    require(length > 0 && length <= 4096 && (10 + length) % 16 == 0, path,
+            "invalid or oversized header length/alignment");
+    std::string text(length, '\0');
+    stream.read(text.data(), static_cast<std::streamsize>(length));
+    require(bool(stream), path, "truncated header");
+    static const std::regex format(
+        R"(\{\s*['"]descr['"]\s*:\s*['"]<(f4|f8|u4)['"]\s*,\s*['"]fortran_order['"]\s*:\s*False\s*,\s*['"]shape['"]\s*:\s*\(\s*([0-9]+)\s*,\s*(?:([0-9]+)\s*,?\s*)?\)\s*,?\s*\}\s*\n)");
+    std::smatch match;
+    require(std::regex_match(text, match, format), path,
+            "unsupported header (requires <f4/<f8/<u4, C order, rank 1/2, alphabetical keys)");
+    Header header{{dimension(match[2].str(), path)},
+                  match[1] == "f4"   ? Dtype::float32
+                  : match[1] == "f8" ? Dtype::float64
+                                     : Dtype::uint32,
+                  10 + length,
+                  0,
+                  match[1] == "f8" ? 8U : 4U};
+    if (match[3].matched)
+        header.shape.push_back(dimension(match[3].str(), path));
+    header.elements = count(header.shape, path, header.item_bytes);
+    const auto payload = header.elements * header.item_bytes;
+    require(payload <= std::numeric_limits<std::size_t>::max() - header.offset, path,
+            "file byte count overflows size_t");
+    require(std::filesystem::file_size(path) == header.offset + payload, path,
+            "payload length does not match shape");
+    return header;
 }
 } // namespace
 
-Writer::Writer(const std::filesystem::path &path, const std::vector<std::size_t> &shape)
-    : path_(path), remaining_(count(shape, path)) {
-    std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (";
+Header inspect(const std::filesystem::path &path) {
+    std::ifstream stream(path, std::ios::binary);
+    return read_header(stream, path);
+}
+
+Writer::Writer(const std::filesystem::path &path, const std::vector<std::size_t> &shape,
+               Dtype dtype)
+    : path_(path), remaining_(count(shape, path, dtype == Dtype::float64 ? 8 : 4)), dtype_(dtype) {
+    const char *descr = dtype == Dtype::float32   ? "<f4"
+                        : dtype == Dtype::float64 ? "<f8"
+                        : dtype == Dtype::uint32  ? "<u4"
+                                                  : nullptr;
+    require(descr != nullptr, path, "unsupported writer dtype");
+    std::string header =
+        std::string("{'descr': '") + descr + "', 'fortran_order': False, 'shape': (";
     for (auto dimension : shape) {
         header += std::to_string(dimension) + ", ";
     }
@@ -74,7 +123,8 @@ Writer::Writer(const std::filesystem::path &path, const std::vector<std::size_t>
     require(bool(stream_), path_, "write header failed");
 }
 
-void Writer::append(std::span<const float> values) {
+template <typename T> void Writer::append_values(std::span<const T> values, Dtype dtype) {
+    require(dtype_ == dtype, path_, "append dtype does not match writer");
     require(stream_.is_open() && values.size() <= remaining_, path_, "append exceeds array shape");
     if constexpr (std::endian::native == std::endian::little) {
         if (!values.empty()) {
@@ -83,13 +133,16 @@ void Writer::append(std::span<const float> values) {
         }
     } else {
         for (auto value : values) {
-            const auto little = swap_float(value);
+            const auto little = swap_scalar(value);
             stream_.write(reinterpret_cast<const char *>(&little), sizeof(little));
         }
     }
     require(bool(stream_), path_, "write payload failed");
     remaining_ -= values.size();
 }
+void Writer::append(std::span<const float> values) { append_values(values, Dtype::float32); }
+void Writer::append(std::span<const double> values) { append_values(values, Dtype::float64); }
+void Writer::append(std::span<const std::uint32_t> values) { append_values(values, Dtype::uint32); }
 
 void Writer::finish() {
     require(stream_.is_open() && remaining_ == 0, path_, "array is incomplete or already closed");
@@ -98,31 +151,11 @@ void Writer::finish() {
 }
 
 Reader::Reader(const std::filesystem::path &path) : path_(path), stream_(path, std::ios::binary) {
-    require(bool(stream_), path_, "open for reading failed");
-    unsigned char prefix[10]{};
-    stream_.read(reinterpret_cast<char *>(prefix), sizeof(prefix));
-    require(bool(stream_) && std::memcmp(prefix, "\x93NUMPY\x01\x00", 8) == 0, path_,
-            "expected NPY v1.0 magic/version");
-    const auto length = static_cast<std::size_t>(prefix[8]) + std::size_t(256) * prefix[9];
-    require(length > 0 && length <= 4096 && (10 + length) % 16 == 0, path_,
-            "invalid or oversized header length/alignment");
-    std::string header(length, '\0');
-    stream_.read(header.data(), static_cast<std::streamsize>(length));
-    require(bool(stream_), path_, "truncated header");
-    // Restrict this parser to NumPy's ordinary, alphabetical-key float32 header.
-    // No Python expression evaluation, object arrays, or implicit dtype conversion.
-    static const std::regex format(
-        R"(\{\s*['"]descr['"]\s*:\s*['"]<f4['"]\s*,\s*['"]fortran_order['"]\s*:\s*False\s*,\s*['"]shape['"]\s*:\s*\(\s*([0-9]+)\s*,\s*(?:([0-9]+)\s*,?\s*)?\)\s*,?\s*\}\s*\n)");
-    std::smatch match;
-    require(std::regex_match(header, match, format), path_,
-            "unsupported header (requires <f4, C order, rank 1/2, alphabetical keys)");
-    shape_.push_back(dimension(match[1].str(), path_));
-    if (match[2].matched) {
-        shape_.push_back(dimension(match[2].str(), path_));
-    }
-    remaining_ = count(shape_, path_);
-    require(std::filesystem::file_size(path_) == 10 + length + remaining_ * 4, path_,
-            "payload length does not match shape");
+    auto header = read_header(stream_, path_);
+    require(header.dtype == Dtype::float32, path_,
+            "Reader requires float32; use MappedReader for explicit conversion");
+    shape_ = std::move(header.shape);
+    remaining_ = header.elements;
 }
 
 void Reader::read(std::span<float> values) {
@@ -134,7 +167,7 @@ void Reader::read(std::span<float> values) {
     require(bool(stream_), path_, "read payload failed");
     if constexpr (std::endian::native != std::endian::little) {
         for (auto &value : values) {
-            value = swap_float(value);
+            value = swap_scalar(value);
         }
     }
     remaining_ -= values.size();

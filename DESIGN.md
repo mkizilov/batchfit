@@ -239,12 +239,18 @@ The local `npy::Writer`/`Reader` implement the simple NPY v1.0 envelope: magic a
 version bytes, uint16 little-endian header length, newline/space-padded dictionary,
 and a contiguous little-endian IEEE float32 payload. The writer aligns to 64
 bytes; the reader accepts the format's 16-byte minimum alignment. Support is
-deliberately limited to rank 1/2, `<f4`, C order and NumPy's alphabetical dictionary
+deliberately limited to rank 1/2, C order and NumPy's alphabetical dictionary
 key order. Reject unsupported dtype/order/version/rank, malformed/oversized headers,
 truncation, trailing payload bytes, integer overflow and shape mismatches. Never
 evaluate Python expressions. Generic Writer callers must append the full declared
 element count and call `finish()` to check flush/close; Reader accepts partial
 reads without allocating the full array.
+
+The original `Reader` and default `Writer` remain strictly `<f4`; synthetic
+loading never implicitly converts. Turn 10 adds **explicitly typed** Writer
+overloads for `<f8` benchmark/input files and `<u4` status/iteration output, plus
+`MappedReader` float32/float64 conversion. `inspect()` validates the same narrow
+header/shape/byte envelope. Mapped inputs reject uint32 and all other dtypes.
 
 Tests use fixed-seed 660,000-observation samples per noise model to check bias,
 standardized variance and expected RMS SNR, plus the Gaussian fourth moment and
@@ -280,6 +286,76 @@ register pressure, small-matrix storage, transposition and transfers matter.
 Chunk large N to bound shared buffers and scratch storage. Keep N/M/P and offset
 arithmetic checked on the host; shader index width is explicit. No per-fit dynamic
 allocations are allowed in a kernel.
+
+## Out-of-core pipeline (turn 10)
+
+`metal::fit_npy<Model>` accepts immutable POSIX NPY files `x[M]`, fit-major
+`y[N,M]`, optional `initial[N,P]`, and a synchronous per-chunk result consumer.
+It is a float32 fitting API: float64 inputs are explicitly rounded to float32;
+nonfinite/overflowed rows retain the reference's invalid-input behavior. No
+parameter/noise conventions or LM tolerances change. An empty initial path uses
+the existing automatic guesses; failures use their NaN parameters and remain
+accounted-for rows, never truth seeds or CPU fallback.
+
+Only one y window is mapped at a time. Page-aligned read-only `mmap` windows
+include their header-offset delta, validate element ranges and current file size,
+and unmap after conversion. Inputs must not be modified/truncated during a run:
+the size check cannot make concurrent truncation safe. Sequential/WILLNEED
+mapping advice and bounded next-chunk read-ahead (`F_RDADVISE` on macOS,
+`posix_fadvise` on other POSIX platforms) avoid relying solely on demand faults.
+Advisory failures are reported. OS file-cache pages are reclaimable and are not
+claimed as a process-RSS bound. Ordinary streamed Reader/Writer remain usable
+without mapping; unsupported mapping platforms fail explicitly.
+
+One producer and one readback worker share a fixed-depth ring (default three,
+configurable 1–3). Each slot owns a complete shared-buffer batch. The producer
+converts into one reusable fit-major float staging buffer, copies/guesses initial
+parameters, then transposes with source-contiguous 16x16 tiles. Active N and spans
+shrink for the final chunk; its point-major stride is **active N**, not capacity.
+The producer commits asynchronously; the reader waits for checked completion,
+calls the consumer in input order, and only then releases that slot. Consumers
+must copy/write values before returning: retained views are **not snapshots**.
+
+`submit_batch<Model>` configures/leases a batch and installs a completion handler
+before commit. `PendingBatch` retains storage, buffers, queue and runtime even if
+the original Context/batch dies. Completion checks command status/error and GPU
+timestamps, catches numerical/runtime error reporting into an exception pointer,
+and signals a condition variable. `get()` propagates it on the caller thread.
+Busy leases reject mutation/resubmission until get/drain, and release exactly once
+so an old consumed handle cannot unlock a newer submission. Destruction drains;
+unobserved errors are printed. The callback uses a weak completion reference to
+avoid a command-buffer/handler ownership cycle. An enabled first-dispatch GPU
+capture waits only that first submission to preserve capture semantics; capture
+is disabled for throughput measurements. A small production Objective-C++ bridge
+uses an immutable by-value block and a registration/invocation publication mutex.
+This replaces metal-cpp's mutable `__block std::function` shim: TSan reported its
+driver handoff, while the explicit C++ synchronization passes TSan without race
+suppression. This bridge is not the test-only native SDK runtime adapter.
+
+Producer, consumer and observer exceptions stop new work, drain every committed
+slot, join the worker and rethrow the first failure. Input/output lifetimes stay
+valid through draining. The CLI refuses an existing output directory/timeline,
+streams typed NPY output, checks final flush/close, and removes only its own
+partial output on error. No full-N results, event arrays or work queues grow with
+dataset size; observation storage is O(chunk_fits*M), ring depth at most three.
+
+Automatic sizing uses device `recommendedMaxWorkingSetSize()/8`, capped at
+256 MiB (64 MiB when no recommendation is provided). The estimate includes all
+ring payloads, float conversion staging and the active mapped input/initials;
+small headers/grid/page rounding/runtime caches remain overhead, not a promised
+RSS ceiling. It rounds down to a multiple of 256 fits when possible and caps
+against every buffer's `maxBufferLength`, uint32 `N*M`/`N*P`, and total fits.
+Oversized explicit chunks are rejected instead of silently exceeding the device
+limit. Explicit sizing overrides only the heuristic budget. Three slots mean
+three possible committed, not-yet-completed buffers—not a claim of three kernels
+executing simultaneously or a guarantee that an I/O-bound producer fills them.
+
+The small test matrix covers four models, every variant, depths 1 and 3, float64
+conversion, automatic/caller initials, tail indexing, ordered CPU parity,
+busy/empty/reused buffers and exception draining. The large-file runner checks
+every output against a cached CPU reference for its 64 deterministic noiseless
+patterns without retaining the full input/results. Profiling/benchmark documents
+distinguish these data from earlier noisy CPU/Metal matrices.
 
 ## Levenberg–Marquardt reference algorithm
 

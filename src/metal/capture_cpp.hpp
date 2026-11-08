@@ -28,6 +28,7 @@ class Capture {
         if (active_)
             manager_->stopCapture();
     }
+    bool enabled() const { return active_; }
     void finish() {
         if (!active_)
             return;

@@ -1,4 +1,105 @@
-# Metal kernel v1 profiling
+# Metal profiling and out-of-core pipeline
+
+## Out-of-core pipeline (turn 10)
+
+The production metal-cpp pipeline emits streamed application phase events to
+`profiling/pipeline_events.json` (Chrome/Perfetto JSON). This is **not a Metal
+System Trace, shader-profiler output, occupancy measurement or hardware limiter
+counter**. CPU timestamps use `mach_absolute_time` with the native timebase;
+command-buffer GPUStartTime/GPUEndTime are documented in the same system Mach
+domain. Events label next-chunk read-ahead requests, preparation (with map/convert,
+initial-copy/guess and transpose children), submit, GPU command intervals and
+readback/consumer work. Producer is thread lane 1, readback worker lane 2, GPU
+intervals lane 3. These are logical lanes, not invented OS thread identities.
+
+Compare CPU preparation for chunk k+1 against the GPU interval of chunk k. The
+shared-buffer ring keeps up to three committed buffers pending, while readback
+for k-1 uses another slot. A slow disk/producer can leave fewer than three pending;
+configured depth and **observed peak pending** are reported separately. Overlap
+does not demonstrate occupancy, three simultaneous kernels, or complete GPU
+saturation. GPU command intervals may overlap; use their union for coverage,
+not the sum as an occupancy estimate.
+
+Metal System Trace was attempted again, including a `--no-cache` retry:
+
+```sh
+xcrun --no-cache xctrace record --template 'Metal System Trace' --time-limit 15s \
+  --output profiling/pipeline-system.trace --launch -- \
+  "$PWD/build/metal-release/batchfit_pipeline_baseline" --smoke
+```
+
+Both attempts exited **72**: `unable to find utility "xctrace"`. Even `--no-cache`
+attempted a denied `/var/folders/.../xcrun_db-*` cache write, despite the supplied
+project-local TMPDIR. No host file write succeeded, developer-tool selection or
+settings were changed, or sandbox boundary was bypassed. Consequently **the
+requested System Trace overlap check remains unverified here**. The retained
+application timestamps are independent available evidence, not a relabeled
+substitute. With a user-provided full Xcode environment, rerun that command
+without `--smoke` (allow a sufficiently long recording), then inspect CPU prepare
+and command-buffer intervals in Instruments; no service/hardware setup is required
+by the library itself.
+
+The Release runner writes a real dense ~10 GB file under its owned
+`.agent-local/pipeline-benchmark-*` directory, validates every output, and removes
+that directory on normal completion/failure. It refuses an existing event file:
+archive an earlier `profiling/pipeline_events.json` deliberately before rerunning.
+`BATCHFIT_GPU_CAPTURE` must be disabled for throughput work; first-dispatch capture
+intentionally waits for that dispatch to preserve the earlier capture contract.
+See BENCHMARKS.md for exact workload, measured throughput, memory and limitations.
+
+### Final application timestamp evidence
+
+The retained final-source JSON covers every chunk and fit:
+
+| Trace | Chunks / fits | GPU interval union s | CPU prepare(k+1) overlapping GPU(k), s | Prepare + read-ahead request overlapping GPU, s |
+|---|---:|---:|---:|---:|
+| `profiling/pipeline_events.json` (float64) | 123 / 312,500 | 2.824693 | 0.779917 | 2.822912 |
+| `profiling/pipeline_float32_events.json` | 198 / 5,000,000 | 5.967427 | 4.575618 | 5.958495 |
+
+Intervals were intersected in the common Mach domain, not inferred from separate
+duration totals. Open the JSON in a local Chrome-trace/Perfetto viewer and inspect
+CPU lane 1 preparing the next chunk while lane 3 contains the previous GPU
+interval; lane 2 consumes completed outputs. Every result was checked against CPU.
+There are 984 / 1,584 complete phase events, streamed rather than held by the
+pipeline. The JSON provenance explicitly says **NOT Metal System Trace**.
+
+This proves application preparation/GPU-command overlap for those workloads.
+It does **not** prove continuous GPU saturation: final large-file runs observed
+only one pending command at a time, despite a three-slot capacity and small tests
+reaching three. Disk/page-in time dominated; three slots cannot fix an input
+bandwidth bottleneck. The float64 run was slower with three slots, while float32
+improved modestly; BENCHMARKS.md retains both. No occupancy, ALU/memory limiter or
+shader line costs are inferred, and no successful System Trace is claimed.
+
+### Sanitizer commands and qualification
+
+The pipeline/mapping suite passes ASan/UBSan plus Metal API/shader validation,
+and TSan with both C++ and the Objective-C++ callback bridge instrumented. Apple's
+`NSObject.hpp` nil-message implementation triggers UBSan's C++ null-receiver
+check even for empty `NS::SharedPtr`; the initial unsuppressed run reported it.
+`tools/sanitizer_ignorelist.txt` excludes **only that upstream inline header**
+from UBSan, not batchfit code, numerical tests, address checks or thread checks.
+No TSan suppression is used. LeakSanitizer was not run.
+
+```sh
+flags="-fsanitize=address,undefined -fno-omit-frame-pointer -fsanitize-ignorelist=$PWD/tools/sanitizer_ignorelist.txt"
+cmake -S . -B .agent-local/check/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DBATCHFIT_METAL=ON -DBATCHFIT_BUILD_BENCHMARKS=OFF -DBATCHFIT_BUILD_TESTS=ON \
+  -DCMAKE_CXX_FLAGS="$flags" -DCMAKE_OBJCXX_FLAGS="$flags" \
+  -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined \
+  -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST="$PWD/build/metal/_deps/googletest-src"
+cmake --build .agent-local/check/asan --target batchfit_pipeline_check batchfit_mmap_check --parallel 2
+UBSAN_OPTIONS=halt_on_error=1 ASAN_OPTIONS=detect_leaks=0 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
+  .agent-local/check/asan/batchfit_pipeline_check
+```
+
+Use a separate build with `-fsanitize=thread -fno-omit-frame-pointer` for both
+CXX/OBJCXX flags, `-fsanitize=thread` for executable linking and
+`TSAN_OPTIONS=halt_on_error=1`; do not combine TSan with ASan. Scratch sanitizer
+builds are removed at handoff. The ordinary `scripts/check.sh` gate is independent
+and includes both presets, all CTests, selected clang-tidy checks and CLI checks.
+Indexed diagnostics remain partial without a root compile-database marker;
+actual builds and clang-tidy against the build databases are authoritative here.
 
 ## Status: measured experiments, unavailable Xcode-only metrics
 

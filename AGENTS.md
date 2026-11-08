@@ -87,6 +87,19 @@ Extend this file with the project's language-specific architecture and verificat
   relabel historical v1 input/seed measurements after initializer fixes.
 - Preserve the dense shoulder-noise initial-guess regression: secondary candidates
   must be a full measured width away, not another noise maximum on the same peak.
+- Out-of-core fitting is `include/batchfit/metal/pipeline.hpp` / `src/metal/pipeline.cpp`:
+  immutable window-mapped float32/float64 NPY inputs, one conversion staging buffer,
+  at most three shared slots, two CPU workers and checked completion handlers.
+  Preserve active-N tail strides, ordered borrowed result views, once-only busy
+  leases, first-error propagation and complete draining before resource reuse.
+  `completion_bridge.mm` publishes immutable native-block callbacks with an
+  explicit mutex across the uninstrumented Metal driver; keep its TSan check.
+- `npy::Reader` stays strictly float32. Typed Writer overloads and MappedReader
+  conversions are explicit; reject unsupported headers/dtypes and changed sizes.
+  Never retain full datasets/results/events in a supposedly bounded pipeline.
+- Pipeline phase JSON is application/Mach plus command-buffer instrumentation,
+  **not Metal System Trace**. Keep unavailable xctrace and I/O/cache limitations
+  explicit. Run large dense-file benchmarks only in Release, not the ordinary gate.
 
 ## Setup and verification
 
@@ -110,6 +123,11 @@ python3 tools/run_tidy.py build/metal  # macOS only
 python3 tools/check_generator.py build/cpu/batchfit_generate
 sh scripts/check.sh
 ```
+
+The gate also runs window mapping, pipeline CPU parity/error-draining tests,
+`batchfit_pipeline_baseline --smoke` and independent stdlib `tools/check_pipeline.py`
+CLI/typed-NPY checks. The full ~10 GB benchmark command and cleanup are documented
+in BENCHMARKS.md; it is never an implicit CTest workload.
 
 Use `clang-format -i <files>` for maintained C++/Metal files; `.clang-format` is
 authoritative. `clang-tidy` uses `.clang-tidy` plus each build's compile database.

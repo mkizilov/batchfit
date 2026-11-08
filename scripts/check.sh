@@ -28,5 +28,8 @@ if [ "$(uname -s)" = Darwin ]; then
     build/metal/batchfit_bench --benchmark_filter=metal_lm_smoke
     build/metal/batchfit_metal_profile --smoke
     build/metal/batchfit_cooperative_baseline --smoke
+    build/metal/batchfit_pipeline_baseline --smoke
+    build/metal/batchfit_pipeline_baseline --smoke --float32
+    python3 tools/check_pipeline.py build/metal/batchfit_fit_npy
 fi
 echo 'All checks pass: formatting, CPU tests, clang-tidy, benchmark smoke, and Metal tests on macOS.'

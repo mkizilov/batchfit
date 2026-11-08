@@ -184,6 +184,67 @@ errors. The final automatic policy selected the exact fastest forced median in
 29/32 cells and was within 4.01% in the three near-ties. This is a calibrated
 large-batch, point-major M4 policy, not universal tuning for small N or other GPUs.
 
+## Out-of-core NPY fitting and three-slot pipelining
+
+`metal::fit_npy<Model>` maps **windows**, never the complete observation file.
+Inputs are immutable NPY v1.0, little-endian C-order `x[M]`, `y[N,M]`, and optional
+`initial[N,P]`; float32 and float64 are accepted and explicitly converted to
+float32 before fitting. No shader/double-precision solver is implied. Other
+dtypes, versions, orders and ranks are rejected. Omitting `initial` uses the
+existing data-only automatic guesses; failed guesses stay in the output as
+`invalid_input`, and are counted rather than dropped.
+
+```cpp
+#include <batchfit/batchfit.hpp>
+#include <iostream>
+
+batchfit::metal::Context context;
+auto stats = batchfit::metal::fit_npy<batchfit::models::Gaussian>(
+    context, {"x.npy", "y.npy", {}},
+    [](std::size_t first, const batchfit::metal::Result& chunk) {
+        std::cout << first << ": " << chunk.status.size() << " results\n";
+        // Write or copy the values here; these views are recycled after return.
+    });
+```
+
+The producer maps/converts one fit-major chunk, prepares initials, and transposes
+to point-major shared buffers while a second CPU worker consumes completed
+results. Three reusable slots submit asynchronous command buffers; completion
+handlers check errors/timestamps and signal CPU waiters. Every slot is drained
+before reuse or failure propagation. This uses two CPU workers, not a full-core
+pool. Results are delivered in input order, including a short final chunk.
+**Do not retain callback views or mutate/truncate input files while fitting.**
+
+`PipelineOptions{chunk_fits, in_flight, variant}` defaults to `{0,3,Automatic}`.
+Zero selects a device-based chunk size: budget `min(recommendedWorkingSet/8,
+256 MiB)` for the shared slots, conversion staging and mapped input (64 MiB when
+no recommendation exists), also respecting `maxBufferLength` and shader uint32
+index limits. Depth 1–3 is supported for controlled comparisons. An explicit
+chunk overrides the automatic memory budget, but not device/index limits.
+Planning budgets are not hard RSS limits; the Metal runtime and OS page cache
+have their own overhead. `Context::limits()` exposes the queried limits.
+
+```sh
+build/metal/batchfit_fit_npy --model gaussian --x data/x.npy --y data/y.npy \
+  --output .agent-local/fitted --chunk-fits 0 --in-flight 3 \
+  --timeline profiling/my_pipeline.json
+# Add --initial data/initial.npy for caller-provided initials.
+```
+
+The new output directory contains float32 `parameters.npy` / `chi_squared.npy`
+and uint32 `status.npy` / `iterations.npy`. Status codes are 0 converged, 1 max
+iterations, 2 singular matrix, 3 invalid input. Existing output/timeline paths
+are refused; owned partial output is rolled back on failure. API consumers can
+stream results elsewhere without allocating full-N output arrays. `submit_batch`
+also exposes the asynchronous primitive directly: retain its `PendingBatch`,
+call `get()` before reading/reusing buffers, and consume its result views before
+resubmitting the same batch. Dropped handles synchronously drain; unobserved GPU
+errors are reported, not silently discarded.
+
+See [BENCHMARKS.md](BENCHMARKS.md#out-of-core-pipeline-turn-10) for the actual dense
+10.24 GB run and memory/throughput, and [PROFILING.md](PROFILING.md#out-of-core-pipeline-turn-10)
+for timestamp overlap and the unavailable Metal System Trace qualification.
+
 ## Metal profiling
 
 For measured Metal group/layout/half-input experiments, capture files and exact

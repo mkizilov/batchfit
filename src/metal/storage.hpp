@@ -22,18 +22,19 @@ inline std::array<std::size_t, 8> buffer_counts(std::size_t n, std::size_t m, un
 inline std::shared_ptr<Storage> make_storage(std::size_t n, std::size_t m, unsigned p,
                                              const std::array<void *, 8> &pointers,
                                              std::shared_ptr<void> resources) {
-    return std::make_shared<Storage>(Storage{n,
-                                             m,
-                                             p,
-                                             {static_cast<float *>(pointers[0]), m},
-                                             {static_cast<float *>(pointers[1]), n * m},
-                                             {static_cast<float *>(pointers[2]), n * p},
-                                             {static_cast<float *>(pointers[4]), n * p},
-                                             {static_cast<float *>(pointers[7]), n},
-                                             {static_cast<FitStatus *>(pointers[5]), n},
-                                             {static_cast<unsigned *>(pointers[6]), n},
-                                             static_cast<Config *>(pointers[3]),
-                                             std::move(resources)});
+    return std::shared_ptr<Storage>(new Storage{n,
+                                                n,
+                                                m,
+                                                p,
+                                                {static_cast<float *>(pointers[0]), m},
+                                                {static_cast<float *>(pointers[1]), n * m},
+                                                {static_cast<float *>(pointers[2]), n * p},
+                                                {static_cast<float *>(pointers[4]), n * p},
+                                                {static_cast<float *>(pointers[7]), n},
+                                                {static_cast<FitStatus *>(pointers[5]), n},
+                                                {static_cast<unsigned *>(pointers[6]), n},
+                                                static_cast<Config *>(pointers[3]),
+                                                std::move(resources)});
 }
 inline constexpr const char *kernel_names[] = {"fit_gaussian", "fit_lorentzian", "fit_pseudo_voigt",
                                                "fit_two_lorentzian"};
