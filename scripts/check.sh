@@ -17,6 +17,7 @@ python3 tools/check_format.py
 cmake --preset cpu
 cmake --build --preset cpu
 ctest --preset cpu
+python3 tools/check_generator.py build/cpu/batchfit_generate
 python3 tools/run_tidy.py build/cpu
 build/cpu/batchfit_bench --benchmark_min_time=0.01s
 if [ "$(uname -s)" = Darwin ]; then

@@ -16,6 +16,79 @@ batchfit::models::Gaussian<double>::jacobian(3.0, params, jacobian);
 Parameter ordering, width conventions and domains are specified in
 [the model contract](DESIGN.md#shared-model-definitions).
 
+## Synthetic datasets
+
+`batchfit_generate` streams datasets to a **new** output directory, refusing to
+overwrite existing data. Build it with CMake (including a minimal CPU build), then:
+
+```sh
+build/cpu/batchfit_generate --output .agent-local/example-data --model pseudo_voigt --fits 10000 --points 64 --noise gaussian --snr 20 --seed 42 --chunk-fits 4096 --range amplitude=1:3 --range mixing=0.2:0.8
+```
+
+Models are `gaussian`, `lorentzian`, `pseudo_voigt`, and `two_lorentzian`. Noise
+is `none`, `gaussian`, or `poisson`. `--range parameter=lower:upper` is repeatable;
+equal bounds fix a parameter. `--x-min`/`--x-max` set a shared inclusive linear
+grid (default -5 to 5). Run `--help` for all flags. SNR is a **linear per-fit RMS
+ratio**, not decibels or peak height. Poisson output is scaled integer counts,
+in signal units; it requires nonnegative noiseless samples. See the precise
+[noise definitions](DESIGN.md#synthetic-data-and-npy).
+
+Each dataset contains C-order little-endian float32 NPY v1.0 arrays:
+
+- `x.npy`: `(M,)`
+- `y.npy`: `(N, M)`, fit-major noisy observations
+- `true_params.npy`: `(N, P)`, parameters in the documented model order
+
+Model/seed/options are not inferred or serialized in these arrays; retain the
+generation command/options with experiments. The reader deliberately supports
+only this simple NPY subset (including ordinary NumPy-generated headers), not
+object arrays, float64, Fortran order, or NPY v2/v3.
+
+The same functionality is available without the CLI:
+
+```cpp
+#include <batchfit/synthetic.hpp>
+batchfit::synthetic::Options options;
+options.model = batchfit::synthetic::Model::two_lorentzian;
+options.parameters = batchfit::synthetic::default_ranges(options.model);
+options.fits = 10000;
+batchfit::synthetic::save_dataset(".agent-local/paired-data", options);
+batchfit::synthetic::load_dataset(".agent-local/paired-data", 1024,
+    [](std::span<const float> x, const batchfit::synthetic::Chunk& chunk) {
+        // Consume borrowed x, chunk.y and chunk.true_parameters here.
+    });
+// generate(options, consumer) streams directly to the same callback without disk.
+```
+
+Both generation and loading retain only one chunk plus x: O(chunk_fits*(M+P)+M)
+memory, independent of N. A seed is repeatable with the same toolchain/build and
+C++ standard-library implementation/version, byte-identical across chunk sizes.
+Cross-toolchain bitwise identity of random distributions is not promised. Separate parameter/noise RNGs
+keep ground truth unchanged when changing noise type or SNR.
+
+### Million-fit measurement
+
+Measured on Apple M4 / macOS 27.2 arm64 / Apple Clang 21, `-O3 -DNDEBUG`, one
+worker, Gaussian model, N=1,000,000, M=64, seed 42, SNR 20, chunk size 4,096:
+
+| Noise | Generation + write/close time | Fits/s | Maximum RSS (`time -l`) |
+| --- | ---: | ---: | ---: |
+| Gaussian | 0.459 s | 2,176,400 | 2.83 MiB |
+| Poisson | 1.456 s | 686,874 | 2.81 MiB |
+
+Each run wrote 268,000,640 bytes across the three NPY files. These are single-run
+measurements including file close, **not fsync/durable-storage throughput**, and
+not model-fitting performance claims. The million-fit Gaussian dataset was also
+loaded through the library in 1,024-fit chunks (2.22 MiB maximum RSS). Generated
+benchmark datasets were removed afterward. Reproduce with a release build:
+
+```sh
+cmake -S . -B build/generator-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBATCHFIT_METAL=OFF -DBATCHFIT_BUILD_TESTS=OFF -DBATCHFIT_BUILD_BENCHMARKS=OFF
+cmake --build build/generator-release --parallel 2
+/usr/bin/time -l build/generator-release/batchfit_generate --output .agent-local/million-fits --model gaussian --fits 1000000 --points 64 --noise gaussian --snr 20 --seed 42 --chunk-fits 4096
+# Inspect or consume the files, then delete these generated benchmark files/directory.
+```
+
 ## Local setup
 
 Requires a C++20 compiler and Python 3.9+. On macOS, Command Line Tools provide
@@ -91,6 +164,24 @@ clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20
 rm .agent-local/check/models_check .agent-local/check/models_metal
 rmdir .agent-local/check
 ```
+
+Synthetic library/CLI checks also have a dependency-free path:
+
+```sh
+mkdir -p .agent-local/check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude src/cpu/npy.cpp src/cpu/synthetic.cpp tests/synthetic_check.cpp -o .agent-local/check/synthetic_check
+.agent-local/check/synthetic_check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror -Iinclude src/cpu/npy.cpp src/cpu/synthetic.cpp tools/generate.cpp -o .agent-local/check/batchfit_generate
+python3 tools/check_generator.py .agent-local/check/batchfit_generate
+rm .agent-local/check/synthetic_check .agent-local/check/batchfit_generate
+rmdir .agent-local/check
+```
+
+The synthetic suite checks Gaussian/Poisson moments and RMS SNR over 660,000
+observations each, seed/chunk invariance, all 12 model/noise roundtrips, exact
+independent NPY header/payload fixtures, and invalid inputs/rollback. It also
+passes ASan/UBSan. The Python CLI check uses only `ast`/`struct` and other stdlib
+modules; no NumPy package was installed or used for these checks.
 
 Omit `-isysroot ...` on non-macOS systems and do not run the Metal commands there.
 Turn 2 verified all 72,000 float/double model derivative comparisons, hand values,

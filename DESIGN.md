@@ -9,7 +9,8 @@ share a model and usually an x grid, but have independent observations, initial
 parameters, convergence decisions and outputs. There is no coupling between fits.
 
 The implementation provides build/test infrastructure, an internal squared-residual
-compute smoke primitive on CPU and Metal, and shared CPU/MSL model definitions.
+compute smoke primitive on CPU and Metal, shared CPU/MSL model definitions, and
+chunked synthetic generation/NPY I/O.
 It does **not** implement fitting, a model registry, CPU fit scheduling or Python
 bindings yet. The following fitting API
 and solver are the implementation contract for subsequent tasks, not a claim
@@ -116,6 +117,60 @@ replace or change the metal-cpp production backend. Using installed SDK interfac
 here provides an independent, dependency-free MSL compiler oracle even when
 metal-cpp/GoogleTest downloads are unavailable. The Metal preset runs it via CTest;
 a missing GPU is an error, never a skip.
+
+## Synthetic data and NPY
+
+`synthetic::generate(Options, Consumer)` samples model parameters uniformly from
+finite configured ranges, evaluates the shared float model, and delivers borrowed
+fit-major chunks. Equal range endpoints fix parameters. Configure the shared x
+grid, N, M, model, ranges, noise, SNR, seed and chunk size; N/chunk size must be
+positive and M >= 2. Widths must stay positive, and pseudo-Voigt mixing must stay
+in [0,1]. Defaults are supplied by `default_ranges(model)`; library callers must
+set these when selecting a non-default model. No parallel scheduling is required
+for generation. Independent parameter/noise RNG streams use the fixed seed and
+persist across chunks: chunk size cannot change any output value. Distribution
+algorithms are those of the C++ library, so reproducibility is guaranteed for the
+same toolchain/build and implementation/version, not bitwise across different
+standard libraries.
+
+For noiseless samples `s[j]`, let `q = sum(s[j]^2)`, `u = sum(s[j])`, and S denote
+the requested **linear RMS SNR**. Gaussian noise is independent with
+`sigma = sqrt(q/M)/S`. For Poisson noise require every s[j] >= 0, set
+`gain = S^2*u/q`, draw `k[j] ~ Poisson(gain*s[j])`, and return `k[j]/gain`.
+Thus both noises have expected per-fit mean squared error `q/(M*S^2)`; Poisson
+noise is heteroscedastic with variance `s[j]/gain`, not additive Gaussian noise
+masquerading as shot noise. All-zero signals produce zeros. Zero-mean Poisson
+samples are exactly zero without invoking a distribution with invalid mean.
+Reject non-finite results, unrepresentable scaling or expected counts > 1e12
+instead of clipping. Noise-free mode evaluates the signal directly.
+
+`save_dataset(directory, options)` writes `x.npy` (M), `y.npy` (N,M), and
+`true_params.npy` (N,P). It exclusively creates the output directory, refuses
+existing directories and rolls back only its own output on failure. Its parent
+must already exist. `load_dataset(directory, chunk_fits, consumer)` validates file
+sizes/shapes before streaming chunks. Neither path retains all N fits in memory;
+both use O(chunk_fits*(M+P)+M) floats. Metadata such as selected model, ranges, seed
+and SNR is caller-owned experiment configuration, not guessed from array shapes.
+
+The local `npy::Writer`/`Reader` implement the simple NPY v1.0 envelope: magic and
+version bytes, uint16 little-endian header length, newline/space-padded dictionary,
+and a contiguous little-endian IEEE float32 payload. The writer aligns to 64
+bytes; the reader accepts the format's 16-byte minimum alignment. Support is
+deliberately limited to rank 1/2, `<f4`, C order and NumPy's alphabetical dictionary
+key order. Reject unsupported dtype/order/version/rank, malformed/oversized headers,
+truncation, trailing payload bytes, integer overflow and shape mismatches. Never
+evaluate Python expressions. Generic Writer callers must append the full declared
+element count and call `finish()` to check flush/close; Reader accepts partial
+reads without allocating the full array.
+
+Tests use fixed-seed 660,000-observation samples per noise model to check bias,
+standardized variance and expected RMS SNR, plus the Gaussian fourth moment and
+Poisson count quantization. All model/noise combinations round-trip across
+different generation/load chunks, preserving parameters and values exactly.
+Independent byte fixtures and Python stdlib `ast`/`struct` inspection check NPY
+interoperability separately from the C++ writer/reader. See README for actual
+million-fit timing, memory, output size and reproducible commands; benchmark
+datasets are never committed or retained after measurement.
 
 ## Memory layout and mapping
 

@@ -6,7 +6,7 @@ import subprocess
 root = pathlib.Path(__file__).resolve().parents[1]
 files = sorted(
     p
-    for folder in ("include", "src", "tests", "bench")
+    for folder in ("include", "src", "tests", "bench", "tools")
     for p in (root / folder).rglob("*")
     if p.suffix in (".cpp", ".hpp", ".mm", ".metal")
 )

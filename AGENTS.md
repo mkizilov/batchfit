@@ -40,6 +40,12 @@ Extend this file with the project's language-specific architecture and verificat
   macOS default; `OFF` must never fetch metal-cpp or link Apple frameworks.
 - GoogleTest and Google Benchmark use pinned FetchContent archives; metal-cpp
   downloads into `third_party/`. Keep third-party code out of formatting/tidy.
+- Synthetic generation and loading use bounded fit-major chunks, not full-N
+  buffers. Preserve fixed-seed output across chunk sizes and parameter/noise RNG
+  independence. Follow `DESIGN.md` for linear RMS SNR and scaled Poisson semantics.
+- NPY I/O is our narrow v1.0 float32 C-order implementation. Validate file headers,
+  shape/byte counts and integer overflow; do not add implicit dtype conversions.
+  The CLI must refuse preexisting output directories and roll back its own failures.
 
 ## Setup and verification
 
@@ -57,19 +63,23 @@ ctest --preset metal
 python3 tools/check_format.py
 python3 tools/run_tidy.py build/cpu
 python3 tools/run_tidy.py build/metal  # macOS only
+python3 tools/check_generator.py build/cpu/batchfit_generate
 sh scripts/check.sh
 ```
 
 Use `clang-format -i <files>` for maintained C++/Metal files; `.clang-format` is
 authoritative. `clang-tidy` uses `.clang-tidy` plus each build's compile database.
-`tools/run_tidy.py` runs library translation units and CPU model instantiations
-serially, including Metal host code in its build. All ordinary builds/tests have
-at most two workers. README includes standalone CPU/MSL model commands for offline
-verification; these do not replace the full gate.
+`tools/run_tidy.py` serially checks library code, CPU model/synthetic test
+instantiations, and the generator CLI (including Metal host code in its build).
+All ordinary builds/tests have at most two workers. README includes standalone
+CPU/MSL model and synthetic commands for offline verification; these do not
+replace the full gate.
 
 **All checks pass** means `scripts/check.sh` exits zero: formatting is clean,
 both required presets configure/build, every CTest/GoogleTest passes, clang-tidy
 has no selected warnings, and the bounded Google Benchmark smoke completes.
+The gate also runs independent Python stdlib CLI/NPY checks. Standalone synthetic
+tests use the exact same suite as GoogleTest; README gives offline commands.
 Metal is required on macOS, not skipped when the device is missing; elsewhere
 the CPU-only gate applies. Missing dependencies or unavailable device access are
 explicit limitations, never a green gate. The README offline smoke command is a
