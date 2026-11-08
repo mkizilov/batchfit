@@ -28,6 +28,12 @@ Extend this file with the project's language-specific architecture and verificat
   completion status. An explicit Metal request must not silently fall back.
 - The initial residual smoke primitive is not the LM fitting implementation.
   Follow `DESIGN.md` for the eventual public fitting contract and precision rules.
+- The single-fit CPU reference is `include/batchfit/cpu/solver.hpp` (header-only
+  for model/scalar template instantiation). Keep all workspace fixed-size and on
+  the stack. Preserve checked Cholesky, exact diagonal damping, best accepted
+  state, projected box constraints and the documented stopping/status semantics.
+- Model/noise/scalar recovery, all failure statuses and allocation instrumentation
+  must pass for solver changes. GPU/batch fitting remains separate future work.
 - Model structs in `include/batchfit/models.hpp` must compile as both C++ and
   MSL: no C/C++ library includes or dynamic storage, thread-local parameter/output
   arrays in shaders, and no shader double types or string metadata. Keep formulas,

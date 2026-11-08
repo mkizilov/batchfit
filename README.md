@@ -3,7 +3,8 @@
 C++20 infrastructure for fitting batches of small independent nonlinear models
 on CPU and Apple Metal. See [DESIGN.md](DESIGN.md) for the fitting API and solver
 contract. Shared Gaussian, Lorentzian, pseudo-Voigt and paired-Lorentzian models
-compile as both C++ and MSL. **A nonlinear fitter is not implemented yet.**
+compile as both C++ and MSL. A single-fit CPU LM solver is available in float and
+double; batch/GPU fitting is not implemented yet.
 
 ```cpp
 #include <batchfit/models.hpp>
@@ -15,6 +16,44 @@ batchfit::models::Gaussian<double>::jacobian(3.0, params, jacobian);
 
 Parameter ordering, width conventions and domains are specified in
 [the model contract](DESIGN.md#shared-model-definitions).
+
+## Single-fit CPU reference
+
+```cpp
+#include <batchfit/batchfit.hpp>
+std::array<double, 5> x{-2, -1, 0, 1, 2};
+std::array<double, 5> y{};
+std::array<double, 3> truth{2, 0.2, 0.7}, initial{1.5, 0, 1};
+for (unsigned j = 0; j < x.size(); ++j)
+    y[j] = batchfit::models::Gaussian<double>::eval(x[j], truth.data());
+batchfit::cpu::SolverOptions<double, 3> options;
+options.lower[0] = 0;
+options.lower[2] = 0.01; // explicit positive-width constraint
+auto result = batchfit::cpu::fit_single<double, batchfit::models::Gaussian>(x, y, initial, options);
+// Inspect result.status before using result.parameters, iterations, chi_squared.
+```
+
+The model is a class template and the scalar type is explicit. Input x/y spans
+must have equal positive length; initial parameters must match the model's fixed
+count. Everything inside the call uses stack arrays (P <= 8), including J^T J and
+Cholesky. Input buffers are borrowed read-only and returned parameters are owned
+by a fixed-size array. No allocation, weights, batch scheduling or GPU fit dispatch
+is hidden in this API.
+
+Bounds default to unbounded. Initial and trial parameters are clamped; equal
+finite bounds fix a coordinate. Set positive lower bounds for widths and [0,1]
+for pseudo-Voigt mixing. The solver reports `FitStatus::converged`,
+`max_iterations`, `singular_matrix` or `invalid_input`. A rejected/non-finite trial
+never overwrites accepted parameters or chi-squared. The iteration count includes
+attempted systems, even rejected ones; zero-budget calls return initial cost.
+For exact damping, stopping/default-tolerance and failure semantics see
+[the reference algorithm](DESIGN.md#levenbergmarquardt-reference-algorithm).
+
+The CPU reference is the source of truth for later parallel/GPU solvers. Its
+suite recovers 768 synthetic fits across every model/scalar/noise combination,
+with noise-scaled parameter tolerances and deliberate status failures. A separate
+global-new counter verifies zero C++ allocations across all eight model/scalar
+calls, not only the inner iteration loop.
 
 ## Synthetic datasets
 
@@ -140,6 +179,26 @@ Formatting: `python3 tools/check_format.py`; apply fixes with
 or analyze downloaded third-party code as project source.
 
 ## Offline diagnostic check
+
+The full single-fit suite and allocation instrumentation need only the existing
+C++ compiler/SDK, without CMake/GoogleTest or downloaded headers:
+
+```sh
+mkdir -p .agent-local/check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude src/cpu/npy.cpp src/cpu/synthetic.cpp tests/solver_check.cpp -o .agent-local/check/solver_check
+.agent-local/check/solver_check
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude tests/solver_allocation_check.cpp -o .agent-local/check/solver_allocation_check
+.agent-local/check/solver_allocation_check
+rm .agent-local/check/solver_check .agent-local/check/solver_allocation_check
+rmdir .agent-local/check
+```
+
+Both are CTest targets; the recovery/status suite is also wrapped by GoogleTest.
+The direct Clang suite passes with Debug and optimized builds and ASan/UBSan;
+the allocation counter passes in both Debug and optimized builds. The public
+API example above also compiles and recovers its noiseless parameters. These
+checks do not imply a successful CMake/GoogleTest/clang-tidy gate when those
+prerequisites are unavailable (see environment limitations below).
 
 When installers cannot reach their hosts, the existing system Clang can still
 exercise the CPU library and public header without CMake or external frameworks:

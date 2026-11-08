@@ -12,6 +12,7 @@ for filename in sorted({entry["file"] for entry in entries}):
     source = pathlib.Path(filename).resolve()
     if root / "src" in source.parents or source in (
         root / "tests/models_check.cpp",
+        root / "tests/solver_check.cpp",
         root / "tests/synthetic_check.cpp",
         root / "tools/generate.cpp",
     ):

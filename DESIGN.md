@@ -9,12 +9,11 @@ share a model and usually an x grid, but have independent observations, initial
 parameters, convergence decisions and outputs. There is no coupling between fits.
 
 The implementation provides build/test infrastructure, an internal squared-residual
-compute smoke primitive on CPU and Metal, shared CPU/MSL model definitions, and
-chunked synthetic generation/NPY I/O.
-It does **not** implement fitting, a model registry, CPU fit scheduling or Python
-bindings yet. The following fitting API
-and solver are the implementation contract for subsequent tasks, not a claim
-that an unimplemented function works.
+compute smoke primitive on CPU and Metal, shared CPU/MSL model definitions,
+chunked synthetic generation/NPY I/O, and a single-fit CPU LM reference in float
+and double. It does **not** implement batch/GPU fitting, a model registry, CPU fit
+scheduling or Python bindings yet. The batch API below is the contract for later
+tasks; the single-fit API is implemented as described in the solver section.
 
 ## Public API contract
 
@@ -46,7 +45,7 @@ batch-wide crash. No fit may corrupt or suppress the status of another fit.
 | Field | Shape | Meaning |
 | --- | --- | --- |
 | parameters | N * P | Final accepted parameters in fit-major order |
-| status | N | converged, max-iterations, singular, invalid-input or numerical-failure |
+| status | N | converged, max_iterations, singular_matrix or invalid_input |
 | iterations | N | Number of attempted LM updates (zero before any update) |
 | chi_squared | N | Sum of squared residuals at the final accepted parameters |
 
@@ -200,29 +199,99 @@ allocations are allowed in a kernel.
 
 ## Levenberg–Marquardt reference algorithm
 
-For each fit, evaluate residual `r = y - f(x,p)` and the model Jacobian
-`J[j,k] = df(x_j,p)/dp_k`. Accumulate `A = J^T J`, `g = J^T r` and the objective.
-Compute a candidate step by solving:
+`cpu::fit_single<T, Model>(x, y, initial, options)` in
+`include/batchfit/cpu/solver.hpp` is the implemented numerical reference. T is
+float or double; Model is a class template such as `models::Gaussian` supplying
+the shared eval/Jacobian interface and a compile-time P in 1..8. The header-only
+implementation is necessary for model/scalar instantiation. All parameters,
+Jacobians, gradients, matrices and factorization workspaces use fixed-size stack
+arrays. No input copies proportional to M, heap storage, callbacks or dynamic
+linear algebra dependencies are used in the fit call.
+
+For each accepted point, compute residual `r = y - f(x,p)`, model Jacobian
+`J[j,k] = df(x_j,p)/dp_k`, `A = J^T J`, `g = J^T r` and unweighted objective
+`chi_squared = sum(r*r)`. Arithmetic and accumulations use T. Solve the free
+parameter system by in-place, non-pivoted Cholesky with forward/back substitution:
 
 ```text
-(A + lambda * diag(max(A[k,k], scale_floor))) delta = g
-p_trial = p + delta
+(A + lambda * diag(A)) delta = g
+p_trial = clamp(p + delta, lower, upper)
 ```
 
-Use a small dense solve with explicit singularity and non-finite checks; do not
-form an inverse. P <= 8 bounds local matrix storage. Start with a straightforward
-double-precision CPU reference, including a well-defined factorization and
-damping policy, before parallelizing. The current float residual smoke primitive
-is only a plumbing check, not that future double-precision solver.
+There is deliberately **no diagonal floor**: a zero diagonal for an uninformed
+free parameter cannot be rescued by this damping rule. Cholesky failure (a
+nonpositive/non-finite pivot or non-finite solution) returns `singular_matrix`.
+This is not an undamped Jacobian rank diagnostic; positive damping can make a
+rank-deficient normal matrix solvable. A zero projected gradient can converge
+before a solve, even if that problem has unidentifiable parameters.
 
-Accept a trial only when its objective improves and the gain ratio is positive;
-reduce damping on accepted steps and increase it on rejection. A rejected step
-must not overwrite the accepted parameters or objective. Check gradient, scaled
-step and relative objective tolerances, maximum iterations and numerical failure
-explicitly. Document exact thresholds and lambda updates with solver code/tests
-when implemented, so CPU and GPU use the same decisions. Do not promise a global
-minimum; bad initial guesses, degenerate data and unidentifiable models must have
-deterministic, tested outcomes.
+Bounds default to +/- infinity. Finite initial parameters are projected before
+any model evaluation; finite lower==upper fixes a parameter. Exclude fixed
+coordinates and coordinates at a bound whose g points outward: zero their
+cross-terms, use a unit diagonal and zero right-hand side. This lets the remaining
+free parameters solve correctly, including when a fixed parameter has a zero
+Jacobian column. Recompute the active set each iteration. Width positivity and
+mixing bounds are caller-owned options, not hidden model-name-dependent behavior.
+
+Use the **clamped** displacement d to predict reduction
+`pred = 2*g^T*d - d^T*A*d`. Accept only finite trials with strictly positive actual
+and predicted reductions. For `rho = actual/pred`, update
+`lambda *= max(1/3, 1-(2*rho-1)^3)` (rho >= 1 uses 1/3 directly). Rejection,
+including non-finite trial evaluation, leaves accepted parameters/cost unchanged
+and multiplies lambda by 10. Clamp accepted damping to
+`[epsilon(T), max(initial_lambda,1/epsilon(T))]`; cap rejection growth at that same
+upper limit. No inverse or fallback solver is formed.
+
+Stop on any one of these explicitly defined criteria:
+
+- **Gradient:** infinity norm of g over feasible/free directions <= gtol.
+- **Step:** infinity norm of the raw solved delta <=
+  `xtol * (norm_inf(p) + xtol) / max(1,lambda)`. This check precedes trial
+  evaluation and returns the last accepted point. Compensating large damping
+  avoids manufacturing convergence just by shrinking the step artificially.
+- **Relative cost:** both `abs(actual) <= ftol*cost` and
+  `0 <= pred <= ftol*cost/max(1,lambda)`, with finite trial cost/prediction. This
+  also recognizes objective-rounding plateaus in float: a trial may be rejected
+  yet demonstrate negligible actual **and model-predicted** progress. Return the
+  best accepted point; never accept a worse cost merely to stop.
+- Otherwise return `max_iterations` when the attempted-system budget is exhausted.
+
+Default maximum iterations is 100 and initial lambda is 1e-3. Float defaults are
+gtol=1e-5, xtol=1e-6, ftol=1e-6; double defaults are 1e-10, 1e-10, 1e-12. Tolerances
+must be finite/nonnegative and lambda finite/positive. These are numerical stop
+criteria, not promises of a global minimum or statistical goodness of fit.
+
+The fixed-size result contains parameters, `FitStatus`, attempted iteration count
+and final chi-squared. Initial gradient convergence/all-fixed fits take zero
+iterations; each attempted factorization, rejection or step stop counts once.
+A zero iteration budget evaluates the projected initial objective and returns
+`max_iterations`. Reject empty/mismatched data, wrong init length, non-finite
+x/y/init, invalid bounds/options, and non-representable initial model/Jacobian/
+normal equations as `invalid_input`. Invalid preflight returns NaN chi-squared;
+if only linearization failed, the last finite objective remains available.
+With a wrong init length, all output parameters are NaN; otherwise invalid
+preflight retains initial values. Valid finite initial values are projected only
+after input validation. Failures after starting retain the last accepted point.
+
+Verification runs 32 fits per model/noise/scalar combination: **768 recovery
+cases** across four models, noiseless/Gaussian/Poisson observations and float/
+double. Noiseless observations use exact scalar evaluation; noisy float32 data
+comes from the streaming generator at SNR 80 (129 points, seed 20261107). Initial
+guesses are deterministically perturbed around truth; positive widths, mixing
+bounds and disjoint paired-center bounds remove invalid domains/label symmetry.
+This tests local recovery, not global search. Parameter tolerances use an
+eight-standard-error local uncertainty allowance plus a small numerical floor.
+The numerical floor is `(1+abs(truth)) * 5e-4` for float and `* 1e-8` for double.
+Gaussian errors use `sigma^2*(J^T*J)^-1`; Poisson errors use the heteroscedastic
+OLS sandwich covariance with per-point variance `signal/gain`. This is a test
+accuracy scale, not a covariance feature exposed by the solver. Tests independently
+recompute final cost and preserve inputs, isolate each stopping criterion, exercise
+initial/trial clamping and mixed active/free/fixed coordinates, verify Cholesky
+against a known SPD solution, and deliberately trigger every failure status.
+An exponential fixture rejects an overshoot then recovers with adjusted damping;
+a high-damping fixture ensures tiny artificial progress cannot masquerade as
+convergence. A separate executable instruments C++ new/new[] across all eight
+built-in model/scalar fit calls and verifies zero allocations for the whole call.
 
 ## Apple GPU constraints
 
@@ -260,7 +329,7 @@ solutions, finite-difference Jacobian checks, synthetic spectra with known
 parameters, noisy data, and degenerate/non-finite inputs. Fix seeds. Validate
 parameters, final objective, status and iteration behavior, not just successful
 return. Test damping rejection, singular systems, zero iterations, empty batches,
-overflow and dimensions. Later fit-level tests must supplement the scaffold tests.
+overflow and dimensions. Batch/GPU fitting tests must extend these single-fit tests.
 
 Every GPU result must be compared with the CPU reference. Use absolute plus
 relative tolerances justified by float32 conditioning and model scale, and
