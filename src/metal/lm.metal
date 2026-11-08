@@ -12,12 +12,18 @@ template <uint P> struct LMResult {
     float chi_squared;
 };
 
-template <typename Model>
-float cost(device const float *x, device const float *y, constant Config &cfg, uint fit,
+template <typename Sample, bool PointMajor>
+float observation(device const Sample *y, constant Config &cfg, uint fit, uint point) {
+    return float(y[PointMajor ? point * cfg.fits + fit : fit * cfg.points + point]);
+}
+
+template <typename Model, typename Sample = float, bool PointMajor = true>
+float cost(device const float *x, device const Sample *y, constant Config &cfg, uint fit,
            thread const float *params) {
     float value = 0;
     for (uint j = 0; j < cfg.points; ++j) {
-        const float residual = y[j * cfg.fits + fit] - Model::eval(x[j], params);
+        const float residual =
+            observation<Sample, PointMajor>(y, cfg, fit, j) - Model::eval(x[j], params);
         value += residual * residual;
     }
     return value;
@@ -49,8 +55,8 @@ template <uint P> bool cholesky(thread float matrix[P][P], thread float rhs[P]) 
     return true;
 }
 
-template <typename Model>
-LMResult<Model::parameter_count> solve(device const float *x, device const float *y,
+template <typename Model, typename Sample = float, bool PointMajor = true>
+LMResult<Model::parameter_count> solve(device const float *x, device const Sample *y,
                                        device const float *initial, constant Config &cfg,
                                        uint fit) {
     constexpr uint P = Model::parameter_count;
@@ -71,11 +77,11 @@ LMResult<Model::parameter_count> solve(device const float *x, device const float
             cfg.lower[k] > cfg.upper[k] || cfg.lower[k] == INFINITY || cfg.upper[k] == -INFINITY)
             return result;
     for (uint j = 0; j < cfg.points; ++j)
-        if (!isfinite(x[j]) || !isfinite(y[j * cfg.fits + fit]))
+        if (!isfinite(x[j]) || !isfinite(observation<Sample, PointMajor>(y, cfg, fit, j)))
             return result;
     for (uint k = 0; k < P; ++k)
         result.parameters[k] = clamp(result.parameters[k], cfg.lower[k], cfg.upper[k]);
-    result.chi_squared = cost<Model>(x, y, cfg, fit, result.parameters);
+    result.chi_squared = cost<Model, Sample, PointMajor>(x, y, cfg, fit, result.parameters);
     if (!isfinite(result.chi_squared)) {
         result.chi_squared = NAN;
         return result;
@@ -92,7 +98,8 @@ LMResult<Model::parameter_count> solve(device const float *x, device const float
                 matrix[k][l] = 0;
         }
         for (uint j = 0; j < cfg.points; ++j) {
-            const float residual = y[j * cfg.fits + fit] - Model::eval(x[j], result.parameters);
+            const float residual = observation<Sample, PointMajor>(y, cfg, fit, j) -
+                                   Model::eval(x[j], result.parameters);
             float jacobian[P];
             Model::jacobian(x[j], result.parameters, jacobian);
             for (uint k = 0; k < P; ++k) {
@@ -159,7 +166,8 @@ LMResult<Model::parameter_count> solve(device const float *x, device const float
             for (uint l = 0; l < P; ++l)
                 predicted_reduction -= delta[k] * matrix[k][l] * delta[l];
         }
-        const float trial_cost = finite_trial ? cost<Model>(x, y, cfg, fit, trial) : NAN;
+        const float trial_cost =
+            finite_trial ? cost<Model, Sample, PointMajor>(x, y, cfg, fit, trial) : NAN;
         const float reduction = result.chi_squared - trial_cost;
         const float threshold = cfg.cost_tolerance * result.chi_squared;
         const bool small_cost_change = isfinite(trial_cost) && isfinite(predicted_reduction) &&
@@ -186,13 +194,13 @@ LMResult<Model::parameter_count> solve(device const float *x, device const float
     return result;
 }
 
-template <typename Model>
-void run(device const float *x, device const float *y, device const float *initial,
+template <typename Model, typename Sample = float, bool PointMajor = true>
+void run(device const float *x, device const Sample *y, device const float *initial,
          constant Config &cfg, device float *parameters, device uint *status,
          device uint *iterations, device float *chi, uint fit) {
     if (fit >= cfg.fits)
         return;
-    const auto result = solve<Model>(x, y, initial, cfg, fit);
+    const auto result = solve<Model, Sample, PointMajor>(x, y, initial, cfg, fit);
     for (uint k = 0; k < Model::parameter_count; ++k)
         parameters[fit * Model::parameter_count + k] = result.parameters[k];
     status[fit] = result.status;

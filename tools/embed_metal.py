@@ -25,9 +25,15 @@ def expand(path):
 
 
 source = expand(root / "src/metal/lm.metal")
+profile = len(sys.argv) == 3 and sys.argv[2] == "--profile"
+if profile:
+    source += expand(root / "src/metal/profile_variants.metal")
+elif len(sys.argv) != 2:
+    raise SystemExit("usage: embed_metal.py OUTPUT [--profile]")
 assert ')batchfit_msl"' not in source
 output = pathlib.Path(sys.argv[1])
 output.parent.mkdir(parents=True, exist_ok=True)
+name = "profile_shader_source" if profile else "shader_source"
 output.write_text('#pragma once\nnamespace batchfit::metal::detail {\n'
-                  'inline constexpr const char* shader_source = R"batchfit_msl(' + source +
+                  'inline constexpr const char* ' + name + ' = R"batchfit_msl(' + source +
                   ')batchfit_msl";\n}\n')

@@ -148,6 +148,14 @@ fallback was added. This v1 path is not universally parameter-equivalent yet.
 [BENCHMARKS.md](BENCHMARKS.md) records GPU timestamp and wall-time fits/s, CPU
 comparisons, mismatch counts and reproduction commands.
 
+## Metal profiling
+
+For measured Metal group/layout/half-input experiments, capture files and exact
+rerun commands, see [PROFILING.md](PROFILING.md). `BATCHFIT_GPU_CAPTURE=1` opts into
+a checked first-dispatch `.gputrace` under `profiling/`; capture is off by default
+and refuses existing files. Xcode-only occupancy/per-line metrics remain
+unverified here; the report labels hypotheses separately from observations.
+
 ## Automatic initial guesses
 
 ```cpp

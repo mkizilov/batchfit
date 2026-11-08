@@ -33,7 +33,12 @@ struct Resources {
 };
 } // namespace detail
 
+} // namespace batchfit::metal
+#include "capture_cpp.hpp"
+namespace batchfit::metal {
+
 Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
+    detail::prepare_capture_environment();
     const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
     runtime_->device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
     detail::require(runtime_->device.get() != nullptr, "create default device");
@@ -101,10 +106,13 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel) {
     if (storage.fits == 0)
         return {0, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
                 width, group};
+    Capture capture(runtime.queue.get());
     const auto command = NS::RetainPtr(runtime.queue->commandBuffer());
     require(command.get() != nullptr, "create command buffer");
+    command->setLabel(NS::String::string(kernel_names[kernel], NS::UTF8StringEncoding));
     const auto encoder = NS::RetainPtr(command->computeCommandEncoder());
     require(encoder.get() != nullptr, "create compute encoder");
+    encoder->setLabel(NS::String::string(kernel_names[kernel], NS::UTF8StringEncoding));
     encoder->setComputePipelineState(pipeline.get());
     for (unsigned k = 0; k < 8; ++k)
         encoder->setBuffer(resources->buffers[k].get(), 0, k);
@@ -120,6 +128,7 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel) {
     const double begin = command->GPUStartTime(), end = command->GPUEndTime();
     require(std::isfinite(begin) && std::isfinite(end) && end > begin,
             context + " invalid GPU timestamps");
+    capture.finish();
     return {end - begin,
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(), width,
             group};

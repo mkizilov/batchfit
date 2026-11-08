@@ -49,6 +49,11 @@ if(BATCHFIT_METAL)
         DEPENDS tools/embed_metal.py src/metal/lm.metal include/batchfit/models.hpp
             include/batchfit/metal/types.hpp VERBATIM)
     target_sources(batchfit PRIVATE "${PROJECT_BINARY_DIR}/generated/lm_source.hpp")
+    add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/generated/profile_source.hpp"
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/embed_metal.py"
+            "${PROJECT_BINARY_DIR}/generated/profile_source.hpp" --profile
+        DEPENDS tools/embed_metal.py src/metal/lm.metal src/metal/profile_variants.metal
+            include/batchfit/models.hpp include/batchfit/metal/types.hpp VERBATIM)
     target_sources(batchfit PRIVATE src/metal/backend.cpp)
     target_include_directories(batchfit SYSTEM PRIVATE "${metal_cpp_SOURCE_DIR}")
     target_include_directories(batchfit PRIVATE "${PROJECT_BINARY_DIR}/generated")
@@ -136,5 +141,12 @@ if(BATCHFIT_BUILD_BENCHMARKS)
         target_sources(batchfit_bench PRIVATE bench/metal_batch.cpp)
         add_executable(batchfit_metal_baseline bench/metal_baseline.cpp)
         target_link_libraries(batchfit_metal_baseline PRIVATE batchfit::batchfit)
+        enable_language(OBJCXX)
+        add_executable(batchfit_metal_profile bench/metal_profile.mm
+            "${PROJECT_BINARY_DIR}/generated/profile_source.hpp")
+        target_include_directories(batchfit_metal_profile PRIVATE src/metal "${PROJECT_BINARY_DIR}/generated")
+        target_compile_options(batchfit_metal_profile PRIVATE -fobjc-arc)
+        set_target_properties(batchfit_metal_profile PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
+        target_link_libraries(batchfit_metal_profile PRIVATE batchfit::batchfit "${METAL_FRAMEWORK}" "${FOUNDATION_FRAMEWORK}")
     endif()
 endif()

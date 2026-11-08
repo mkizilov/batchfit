@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include "capture_native.hpp"
 #include "lm_source.hpp"
 #include "storage.hpp"
 
@@ -31,6 +32,7 @@ struct Resources {
 } // namespace detail
 
 Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
+    detail::prepare_capture_environment();
     @autoreleasepool {
         runtime_->device = MTLCreateSystemDefaultDevice();
         detail::require(runtime_->device != nil, "create default device");
@@ -104,10 +106,13 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel) {
             return {0,
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
                     width, group};
+        NativeCapture capture(runtime.queue);
         id<MTLCommandBuffer> command = [runtime.queue commandBuffer];
         require(command != nil, "command buffer creation");
+        command.label = [NSString stringWithUTF8String:kernel_names[kernel]];
         id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
         require(encoder != nil, "encoder creation");
+        encoder.label = command.label;
         [encoder setComputePipelineState:pipeline];
         for (unsigned k = 0; k < 8; ++k)
             [encoder setBuffer:resources->buffers[k] offset:0 atIndex:k];
@@ -125,6 +130,7 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel) {
         const double begin = command.GPUStartTime, end = command.GPUEndTime;
         require(std::isfinite(begin) && std::isfinite(end) && end > begin,
                 context + " GPU timestamps");
+        capture.finish();
         return {end - begin,
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
                 width, group};

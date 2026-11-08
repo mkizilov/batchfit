@@ -22,6 +22,7 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "tests/metal_disabled_check.cpp",
         root / "bench/metal_baseline.cpp",
         root / "bench/metal_batch.cpp",
+        root / "bench/metal_profile.mm",
         root / "tests/synthetic_check.cpp",
         root / "tools/generate.cpp",
     ):

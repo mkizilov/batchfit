@@ -26,5 +26,6 @@ if [ "$(uname -s)" = Darwin ]; then
     ctest --preset metal
     python3 tools/run_tidy.py build/metal
     build/metal/batchfit_bench --benchmark_filter=metal_lm_smoke
+    build/metal/batchfit_metal_profile --smoke
 fi
 echo 'All checks pass: formatting, CPU tests, clang-tidy, benchmark smoke, and Metal tests on macOS.'

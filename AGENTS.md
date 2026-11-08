@@ -74,6 +74,12 @@ Extend this file with the project's language-specific architecture and verificat
 - `tests/metal_runtime_native.mm` is test-only SDK verification when metal-cpp
   downloads fail; never link it into production or claim it verifies NS::SharedPtr
   host compilation. CMake Metal tests link the actual metal-cpp driver.
+- Profiling capture is opt-in (`BATCHFIT_GPU_CAPTURE=1`), first dispatch only,
+  under `profiling/`, with overwrite refusal and partial-output cleanup. Preserve
+  requested traces for inspection, never commit their binary bundles.
+- `PROFILING.md` and `profiling/results.csv` distinguish measured timestamps,
+  iteration proxies and unavailable Xcode metrics. Do not invent occupancy,
+  register counts, line costs or limiter counters; keep default v1 behavior intact.
 
 ## Setup and verification
 
