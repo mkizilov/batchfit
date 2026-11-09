@@ -168,19 +168,22 @@ Use `clang-format -i <files>` for maintained C++/Metal files; `.clang-format` is
 authoritative. `clang-tidy` uses `.clang-tidy` plus each build's compile database.
 `tools/run_tidy.py` serially checks library code, CPU model/solver/initial-guess
 and synthetic test instantiations, and the generator CLI (including Metal host code).
-All ordinary builds/tests have at most two workers. README includes standalone
-CPU/MSL model and synthetic commands for offline verification; these do not
+All ordinary builds/tests have at most two workers. Standalone checks do not
 replace the full gate.
 
 **All checks pass** means `scripts/check.sh` exits zero: formatting is clean,
 both required presets configure/build, every CTest/GoogleTest passes, clang-tidy
 has no selected warnings, and the bounded Google Benchmark smoke completes.
 The gate also runs independent Python stdlib CLI/NPY checks. Standalone synthetic
-tests use the exact same suite as GoogleTest; README gives offline commands.
+tests use the exact same suite as GoogleTest.
 Metal is required on macOS, not skipped when the device is missing; elsewhere
 the CPU-only gate applies. Missing dependencies or unavailable device access are
-explicit limitations, never a green gate. The README offline smoke command is a
-diagnostic subset only. No Docker or server process is needed for this scaffold.
+explicit limitations, never a green gate. `check.sh --cpu-only` selects the full
+CPU-only subset, including its sanitizer suite. C++ tests are repeated under
+ASan/UBSan; both normal and sanitized Metal CTests run API/shader validation.
+Only Apple's upstream nil-message bridge is excluded from UBSan, never batchfit
+code. Sanitizer builds are temporary and removed even on failure. No Docker or
+persistent server process is needed.
 
 ## Definition of done for every future task
 

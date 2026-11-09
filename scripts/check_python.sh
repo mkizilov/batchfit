@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+case "$*" in
+    ''|'--cpu-only') ;;
+    *) echo 'Usage: sh scripts/check_python.sh [--cpu-only]' >&2; exit 2 ;;
+esac
 if [ ! -f pyproject.toml ]; then
     echo 'Run scripts/check_python.sh from the repository root.' >&2
     exit 1
@@ -12,7 +16,7 @@ export CMAKE_BUILD_PARALLEL_LEVEL=2
 export PYTHONDONTWRITEBYTECODE=1
 metal=OFF
 required=0
-if [ "$(uname -s)" = Darwin ]; then
+if [ "$(uname -s)" = Darwin ] && [ "${1-}" != --cpu-only ]; then
     metal=ON
     required=1
 fi
