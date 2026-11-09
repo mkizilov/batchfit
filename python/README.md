@@ -34,7 +34,7 @@ assert np.all(status == batchfit.FitStatus.converged)
 ```
 
 Exact signature:
-`fit(x, y, model="lorentzian", p0=None, bounds=None, device="auto")`.
+`fit(x, y, model="lorentzian", p0=None, bounds=None, device="auto", *, uncertainties=False)`.
 
 - Shared `x[M]`, fit-major `y[N,M]`. A single `y[M]` is treated as N=1; outputs
   **always** have batch dimensions. Empty N is supported; M must be positive.
@@ -74,6 +74,35 @@ rows. Shape/model/device/global-bound errors raise exceptions. With p0=None,
 flat/unresolved input can fail initial guessing and return invalid_input (NaN
 parameters); with a valid p0 the fitter's spectral diagnostics remain available.
 Always inspect status before interpreting parameters.
+
+## Optional uncertainties
+
+Use `uncertainties=True` to receive `FitResultWithUncertainties`: the original
+four fields followed by `covariance[N,P,P]`, `stderr[N,P]` and
+`uncertainty_status[N]`. With the default False, the four-array result/unpacking
+is unchanged and no uncertainty output storage is allocated.
+
+The undamped analytic `J.T @ J` is recomputed at the accepted solution and its
+inverse scaled by `chi2/(M-P_free)`. Fixed coordinates have zero conditional
+variance and do not consume residual degrees of freedom. Singular information,
+failed fits, insufficient DOF and active inequality bounds return NaN estimates
+with a separate status; they never overwrite the optimization status. Status
+codes are `UncertaintyStatus.available` (0), `not_converged` (1),
+`insufficient_dof` (2), `singular_matrix` (3), `active_bound` (4), `invalid_input`
+(5). Inspect both status arrays before interpreting error bars.
+
+```python
+result = batchfit.fit(x, y, p0=p0, bounds=bounds, device="auto", uncertainties=True)
+valid = result.uncertainty_status == batchfit.UncertaintyStatus.available
+lower = result.params[valid] - result.stderr[valid]
+upper = result.params[valid] + result.stderr[valid]
+```
+
+Metal computes covariance on GPU in a separate optional pass before command
+completion. The output dtype matches params; output ownership/GIL rules are the
+same as ordinary results. These are marginal local Gaussian errors, not a joint
+confidence region or a guarantee for misspecified/poorly identified models.
+NUMERICS.md reports the 10,000-realization coverage test for every model/backend.
 
 ## Copies, ownership and threads
 
@@ -146,8 +175,9 @@ deliberate CPU-only build reports its expected Metal skips.
 This does not establish SciPy agreement for every ill-conditioned blend, SNR or
 parameter scale. NUMERICS.md's float32 limits still apply. Normalization and
 advanced numerical options are not silently introduced into this minimal API;
-callers choose appropriate units/bounds. Covariance, weights and per-fit grids
-are not part of this numbered task.
+callers choose appropriate units/bounds. Weights and per-fit grids
+are not part of this interface. Covariance/standard errors are opt-in as described
+above, with full assumptions and coverage in NUMERICS.md.
 
 ### Recorded turn-12 verification
 
@@ -165,3 +195,8 @@ are not part of this numbered task.
   The wheel contains `_core`, public/private stubs and `py.typed`, and CPU/Metal
   fitting passed without editable import hooks. Temporary wheel/extraction output
   is removed; the requested editable package remains installed in `.venv`.
+
+Turn 13 adds optional uncertainty estimation and all-denominator coverage checks:
+the combined Python suite is now **73 passing tests**, with CPU-only builds
+reporting 59 passes / 14 expected Metal-only skips. See NUMERICS.md for the
+per-model/device coverage table, failure diagnostics and sanitizer results.

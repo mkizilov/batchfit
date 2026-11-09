@@ -21,6 +21,15 @@ CPU/shared-Metal APIs are described in the implementation sections.
 
 ## Public API contract
 
+Optional parameter covariance/standard errors are implemented in
+`cpu/uncertainty.hpp` and a separate Metal post-fit kernel. They use undamped
+information at the accepted solution and `chi2/(M-P_free)`, with zero conditional
+variance for fixed coordinates and explicit unavailable statuses for failed,
+singular, no-DOF or active-bound cases. No uncertainty arrays/passes are allocated
+by default. CPU single-fit users call the estimator explicitly; batch/Metal/
+pipeline and Python APIs request storage explicitly. NUMERICS.md specifies the
+formulas, normalization transform and measured marginal coverage.
+
 The intended synchronous entry point is:
 
 ```cpp

@@ -122,6 +122,38 @@ void model(batchfit::metal::Context &context, const std::filesystem::path &direc
         },
         source.options, {64, 3});
     require(automatic == 257, "automatic initial preparation preserves every row");
+    batchfit::metal::PipelineOptions schedule{31, 3};
+    schedule.uncertainties = true;
+    std::size_t uncertainty_rows = 0;
+    const auto stats = batchfit::metal::fit_npy<Model>(
+        context, files,
+        [&](std::size_t, const batchfit::metal::Result &result) {
+            require(result.has_uncertainties &&
+                        result.covariance.size() == result.status.size() * p * p,
+                    "pipeline optional covariance/tail shape");
+            for (std::size_t i = 0; i < result.status.size(); ++i) {
+                batchfit::cpu::FitResult<float, p> fit;
+                std::copy_n(result.parameters.data() + i * p, p, fit.parameters.begin());
+                fit.status = result.status[i];
+                fit.chi_squared = result.chi_squared[i];
+                const auto estimate = batchfit::cpu::estimate_uncertainty<float, Model>(
+                    source.x, fit, source.options);
+                require(result.uncertainty_status[i] == estimate.status,
+                        "streamed covariance status parity");
+                if (estimate.status == batchfit::UncertaintyStatus::available)
+                    for (unsigned k = 0; k < p * p; ++k)
+                        model_checks::near(result.covariance[i * p * p + k], estimate.covariance[k],
+                                           1e-8, 1e-3, "streamed accepted-state covariance parity");
+                else
+                    for (unsigned k = 0; k < p * p; ++k)
+                        require(std::isnan(result.covariance[i * p * p + k]),
+                                "unavailable streamed covariance is NaN");
+            }
+            uncertainty_rows += result.status.size();
+        },
+        source.options, schedule);
+    require(uncertainty_rows == 257 && stats.chunks == 9,
+            "pipeline uncertainty reuse retains every row");
 }
 
 inline void pending(batchfit::metal::Context &context) {
@@ -154,6 +186,9 @@ inline void pending(batchfit::metal::Context &context) {
 }
 inline void all() {
     using namespace batchfit::metal;
+    PipelineOptions covariance_limits{2, 3};
+    covariance_limits.uncertainties = true;
+    rejects([&] { choose_chunk_fits({256, 64U << 20}, 100, 1, 8, 4, 4, covariance_limits); });
     require(choose_chunk_fits({8192, 64U << 20}, 100, 512, 8, 8, 4, {4, 3}) == 4,
             "explicit chunk respects maxBufferLength");
     rejects([] { choose_chunk_fits({8192, 64U << 20}, 100, 512, 8, 8, 4, {5, 3}); });

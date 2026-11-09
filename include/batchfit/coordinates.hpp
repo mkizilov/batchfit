@@ -33,6 +33,34 @@ struct Coordinates {
     double x(double value) const { return (value - origin) / x_scale; }
     double y(double value) const { return value / y_scale; }
     double physical_chi_squared(double value) const { return (value * y_scale) * y_scale; }
+    template <template <typename> class Model>
+    std::array<double, std::size_t(Model<double>::parameter_count) * Model<double>::parameter_count>
+    physical_covariance(std::span<const double> covariance) const {
+        constexpr std::size_t p = Model<double>::parameter_count;
+        static_assert(std::is_same_v<Model<double>, models::Gaussian<double>> ||
+                      std::is_same_v<Model<double>, models::Lorentzian<double>> ||
+                      std::is_same_v<Model<double>, models::PseudoVoigt<double>> ||
+                      std::is_same_v<Model<double>, models::TwoLorentzian<double>>);
+        if (covariance.size() != p * p)
+            throw std::invalid_argument("covariance shape mismatch");
+        std::array<double, std::size_t(p) * p> transform{}, result{};
+        for (unsigned i = 0; i < p; ++i)
+            transform[i * p + i] = i == 0 ? y_scale : i == 1 || i == 2 ? x_scale : 1;
+        if constexpr (p == 8) {
+            transform[3 * p + 3] = y_scale;
+            transform[4 * p + 4] = transform[5 * p + 5] = x_scale;
+            transform[6 * p + 6] = y_scale;
+            transform[6 * p + 7] = -origin * y_scale / x_scale;
+            transform[7 * p + 7] = y_scale / x_scale;
+        }
+        for (unsigned i = 0; i < p; ++i)
+            for (unsigned j = 0; j < p; ++j)
+                for (unsigned k = 0; k < p; ++k)
+                    for (unsigned l = 0; l < p; ++l)
+                        result[i * p + j] +=
+                            transform[i * p + k] * covariance[k * p + l] * transform[j * p + l];
+        return result;
+    }
 
     template <template <typename> class Model>
     std::array<double, Model<double>::parameter_count>

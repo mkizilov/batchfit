@@ -28,6 +28,7 @@ struct Runtime {
     NS::SharedPtr<MTL::CommandQueue> queue;
     NS::SharedPtr<MTL::Library> library;
     std::array<NS::SharedPtr<MTL::ComputePipelineState>, 48> pipelines;
+    std::array<NS::SharedPtr<MTL::ComputePipelineState>, 4> uncertainty_pipelines;
     std::mutex mutex;
     const NS::SharedPtr<MTL::ComputePipelineState> &pipeline(unsigned base, unsigned numerics) {
         require(base < 12 && numerics < 4, "invalid numerical pipeline index");
@@ -52,12 +53,48 @@ struct Runtime {
 };
 struct Resources {
     std::shared_ptr<Runtime> runtime;
-    std::array<NS::SharedPtr<MTL::Buffer>, 8> buffers;
+    std::array<NS::SharedPtr<MTL::Buffer>, 11> buffers;
 };
 struct AsyncResources {
     NS::SharedPtr<MTL::CommandBuffer> command;
     std::shared_ptr<Resources> buffers;
 };
+void encode_uncertainty(Storage &storage, Resources &resources, MTL::CommandBuffer *command,
+                        unsigned model) {
+    if (!storage.uncertainties)
+        return;
+    auto &runtime = *resources.runtime;
+    auto &pipeline = runtime.uncertainty_pipelines.at(model);
+    if (pipeline.get() == nullptr) {
+        const auto constants = NS::TransferPtr(MTL::FunctionConstantValues::alloc()->init());
+        require(constants.get() != nullptr, "allocate covariance function constants");
+        const unsigned numerics = 0;
+        constants->setConstantValue(&numerics, MTL::DataTypeUInt, NS::UInteger(0));
+        NS::Error *error = nullptr;
+        const auto function = NS::TransferPtr(runtime.library->newFunction(
+            NS::String::string(uncertainty_kernel_names[model], NS::UTF8StringEncoding),
+            constants.get(), &error));
+        require(function.get() != nullptr,
+                std::string("find covariance kernel ") + uncertainty_kernel_names[model], error);
+        error = nullptr;
+        pipeline = NS::TransferPtr(runtime.device->newComputePipelineState(function.get(), &error));
+        require(pipeline.get() != nullptr,
+                std::string("create covariance pipeline ") + uncertainty_kernel_names[model],
+                error);
+    }
+    const auto encoder = NS::RetainPtr(command->computeCommandEncoder());
+    require(encoder.get() != nullptr, "create covariance encoder");
+    encoder->setLabel(NS::String::string(uncertainty_kernel_names[model], NS::UTF8StringEncoding));
+    encoder->setComputePipelineState(pipeline.get());
+    for (unsigned k = 0; k < 11; ++k)
+        encoder->setBuffer(resources.buffers[k].get(), 0, k);
+    const auto width = pipeline->threadExecutionWidth(),
+               maximum = pipeline->maxTotalThreadsPerThreadgroup();
+    require(width > 0 && maximum >= width, "covariance pipeline thread limits");
+    encoder->dispatchThreads(MTL::Size(storage.fits, 1, 1),
+                             MTL::Size(width * std::min(NS::UInteger(8), maximum / width), 1, 1));
+    encoder->endEncoding();
+}
 } // namespace detail
 
 } // namespace batchfit::metal
@@ -99,13 +136,13 @@ Context::Context(MathMode mode) : runtime_(std::make_shared<detail::Runtime>()) 
         runtime_->pipeline(k, 0);
 }
 
-SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p) const {
-    const auto counts = detail::buffer_counts(n, m, p);
+SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p, bool uncertainties) const {
+    const auto counts = detail::buffer_counts(n, m, p, uncertainties);
     const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
     auto resources = std::make_shared<detail::Resources>();
     resources->runtime = runtime_;
-    std::array<void *, 8> pointers{};
-    for (unsigned k = 0; k < 8; ++k) {
+    std::array<void *, 11> pointers{};
+    for (unsigned k = 0; k < 11; ++k) {
         if (counts[k] == 0)
             continue;
         const auto bytes = counts[k] * sizeof(float);
@@ -118,7 +155,7 @@ SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p) const {
         pointers[k] = resources->buffers[k]->contents();
         detail::require(pointers[k] != nullptr, "map shared buffer " + std::to_string(k));
     }
-    return SharedBatch(detail::make_storage(n, m, p, pointers, resources));
+    return SharedBatch(detail::make_storage(n, m, p, pointers, resources, uncertainties));
 }
 
 DeviceLimits Context::limits() const {
@@ -170,6 +207,7 @@ PendingBatch detail::submit_gpu(const std::shared_ptr<Storage> &storage, unsigne
                                       MTL::Size(group, 1, 1));
     }
     encoder->endEncoding();
+    encode_uncertainty(*storage, *resources, command.get(), kernel);
     completion->backend = std::make_shared<AsyncResources>(AsyncResources{command, resources});
     std::weak_ptr<Completion> weak = completion;
     MTL::HandlerFunction handler = [weak, start, context](MTL::CommandBuffer *finished) {
@@ -259,6 +297,7 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel, KernelVariant variant
                                       MTL::Size(group, 1, 1));
     }
     encoder->endEncoding();
+    encode_uncertainty(storage, *resources, command.get(), kernel);
     command->commit();
     command->waitUntilCompleted();
     const auto context = std::string(variant_kernel_names[selected]) +
@@ -285,7 +324,7 @@ Context::Context() {
 }
 Context::Context(MathMode) : Context() {}
 DeviceLimits Context::limits() const { throw std::runtime_error("Device::Metal is unavailable"); }
-SharedBatch Context::allocate(std::size_t, std::size_t, unsigned) const {
+SharedBatch Context::allocate(std::size_t, std::size_t, unsigned, bool) const {
     throw std::runtime_error("Device::Metal is unavailable");
 }
 Timings detail::run_gpu(Storage &, unsigned, KernelVariant) {

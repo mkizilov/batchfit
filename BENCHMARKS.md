@@ -1,5 +1,13 @@
 # CPU baseline v1
 
+**Turn-13 uncertainty update:** `profiling/uncertainty_dispatch_results.csv`
+records the Release N=100,000 four-model / M=32–4096 forced-and-automatic rerun
+with uncertainties **disabled**. All 128 rows have zero CPU status/parameter/cost
+errors; maximum automatic regret is **1.77423%**, inside the unchanged 5% budget.
+No dispatcher adjustment was needed. These are not covariance-throughput timings:
+covariance is a separate requested-only GPU pass. NUMERICS.md reports its matrix
+checks and 10,000-realization marginal coverage instead.
+
 **Turn-11 numerical update:** NUMERICS.md and `profiling/numerics_results.csv`
 record the float64-reference remedy study. Function-constant-specialized default
 kernels retain the measured performance path; Gaussian M=512 now uses v1. The

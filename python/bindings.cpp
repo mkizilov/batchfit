@@ -27,28 +27,41 @@ template <typename T> void aligned(const Array<T> &array) {
         throw std::invalid_argument("native inputs must be aligned C-contiguous arrays");
 }
 template <typename T>
-py::tuple arrays(batchfit::cpu::BatchResult<T> result, py::ssize_t n, py::ssize_t p) {
+py::tuple arrays(batchfit::cpu::BatchResult<T> result, py::ssize_t n, py::ssize_t p,
+                 bool uncertainties) {
     static_assert(sizeof(batchfit::FitStatus) == sizeof(std::int32_t) &&
-                  sizeof(unsigned) == sizeof(std::uint32_t));
+                  sizeof(unsigned) == sizeof(std::uint32_t) &&
+                  sizeof(batchfit::UncertaintyStatus) == sizeof(std::int32_t));
     auto data = std::make_unique<batchfit::cpu::BatchResult<T>>(std::move(result));
     py::capsule owner(data.get(), [](void *pointer) {
         delete static_cast<batchfit::cpu::BatchResult<T> *>(pointer);
     });
     const auto *storage = data.release();
     const py::ssize_t scalar = sizeof(T), integer = sizeof(std::uint32_t);
-    return py::make_tuple(
+    auto basic = py::make_tuple(
         py::array(py::dtype::of<T>(), {n, p}, {p * scalar, scalar}, storage->parameters.data(),
                   owner),
         py::array(py::dtype::of<std::int32_t>(), {n}, {integer}, storage->status.data(), owner),
         py::array(py::dtype::of<std::uint32_t>(), {n}, {integer}, storage->iterations.data(),
                   owner),
         py::array(py::dtype::of<T>(), {n}, {scalar}, storage->chi_squared.data(), owner));
+    if (!uncertainties)
+        return basic;
+    return py::make_tuple(basic[0], basic[1], basic[2], basic[3],
+                          py::array(py::dtype::of<T>(), {n, p, p},
+                                    {p * p * scalar, p * scalar, scalar},
+                                    storage->covariance.data(), owner),
+                          py::array(py::dtype::of<T>(), {n, p}, {p * scalar, scalar},
+                                    storage->standard_errors.data(), owner),
+                          py::array(py::dtype::of<std::int32_t>(), {n}, {integer},
+                                    storage->uncertainty_status.data(), owner));
 }
 
 template <typename Out, typename In, template <typename> class Model>
 batchfit::cpu::BatchResult<Out>
 compute(std::span<const In> x, std::span<const In> y, std::span<const In> provided, std::size_t n,
-        const batchfit::cpu::SolverOptions<In, Model<In>::parameter_count> &options, bool metal) {
+        const batchfit::cpu::SolverOptions<In, Model<In>::parameter_count> &options, bool metal,
+        bool uncertainties) {
     constexpr unsigned p = Model<In>::parameter_count;
     std::lock_guard lock(fitting);
     std::vector<In> generated;
@@ -67,13 +80,14 @@ compute(std::span<const In> x, std::span<const In> y, std::span<const In> provid
     }
     if (!metal) {
         if constexpr (std::is_same_v<Out, In>)
-            return batchfit::cpu::fit_batch<In, Model>(x, y, initial, pool(), options);
+            return batchfit::cpu::fit_batch<In, Model>(x, y, initial, pool(), options,
+                                                       uncertainties);
         else
             throw std::logic_error("CPU dtype dispatch mismatch");
     }
     if (!batchfit::metal::available())
         throw std::runtime_error("Metal fitting is unavailable in this build or on this device");
-    auto shared = context().make_batch<Model>(n, x.size());
+    auto shared = context().make_batch<Model>(n, x.size(), uncertainties);
     std::transform(x.begin(), x.end(), shared.x().begin(), [](In value) { return float(value); });
     std::transform(initial.begin(), initial.end(), shared.initial().begin(),
                    [](In value) { return float(value); });
@@ -93,15 +107,22 @@ compute(std::span<const In> x, std::span<const In> y, std::span<const In> provid
     }
     const auto result = batchfit::fit_batch<Model>(shared, batchfit::Device::Metal, gpu_options);
     // Retain only small output vectors, not the transposed observation buffers.
-    return {{result.parameters.begin(), result.parameters.end()},
-            {result.status.begin(), result.status.end()},
-            {result.iterations.begin(), result.iterations.end()},
-            {result.chi_squared.begin(), result.chi_squared.end()}};
+    batchfit::cpu::BatchResult<Out> output{{result.parameters.begin(), result.parameters.end()},
+                                           {result.status.begin(), result.status.end()},
+                                           {result.iterations.begin(), result.iterations.end()},
+                                           {result.chi_squared.begin(), result.chi_squared.end()}};
+    if (uncertainties) {
+        output.covariance.assign(result.covariance.begin(), result.covariance.end());
+        output.standard_errors.assign(result.standard_errors.begin(), result.standard_errors.end());
+        output.uncertainty_status.assign(result.uncertainty_status.begin(),
+                                         result.uncertainty_status.end());
+    }
+    return output;
 }
 
 template <typename T, template <typename> class Model>
 py::tuple fit_model(const Array<T> &x, const Array<T> &y, const py::object &p0,
-                    const Array<T> &lower, const Array<T> &upper, bool metal) {
+                    const Array<T> &lower, const Array<T> &upper, bool metal, bool uncertainties) {
     constexpr unsigned p = Model<T>::parameter_count;
     aligned(x);
     aligned(y);
@@ -114,6 +135,8 @@ py::tuple fit_model(const Array<T> &x, const Array<T> &y, const py::object &p0,
     const auto n = y.shape(0);
     if (n > std::numeric_limits<py::ssize_t>::max() / p)
         throw std::invalid_argument("result shape exceeds addressable NumPy size");
+    if (uncertainties && n > std::numeric_limits<py::ssize_t>::max() / p / p)
+        throw std::invalid_argument("covariance shape exceeds addressable NumPy size");
     std::optional<Array<T>> initial_owner;
     std::span<const T> initial;
     if (!p0.is_none()) {
@@ -142,30 +165,35 @@ py::tuple fit_model(const Array<T> &x, const Array<T> &y, const py::object &p0,
         batchfit::cpu::BatchResult<float> result;
         {
             py::gil_scoped_release release;
-            result = compute<float, T, Model>(samples, observations, initial,
-                                              static_cast<std::size_t>(n), options, true);
+            result =
+                compute<float, T, Model>(samples, observations, initial,
+                                         static_cast<std::size_t>(n), options, true, uncertainties);
         }
-        return arrays(std::move(result), n, p);
+        return arrays(std::move(result), n, p, uncertainties);
     }
     batchfit::cpu::BatchResult<T> result;
     {
         py::gil_scoped_release release;
         result = compute<T, T, Model>(samples, observations, initial, static_cast<std::size_t>(n),
-                                      options, false);
+                                      options, false, uncertainties);
     }
-    return arrays(std::move(result), n, p);
+    return arrays(std::move(result), n, p, uncertainties);
 }
 template <typename T>
 py::tuple fit(const Array<T> &x, const Array<T> &y, const py::object &p0, const Array<T> &lower,
-              const Array<T> &upper, const std::string &model, bool metal) {
+              const Array<T> &upper, const std::string &model, bool metal, bool uncertainties) {
     if (model == "gaussian")
-        return fit_model<T, batchfit::models::Gaussian>(x, y, p0, lower, upper, metal);
+        return fit_model<T, batchfit::models::Gaussian>(x, y, p0, lower, upper, metal,
+                                                        uncertainties);
     if (model == "lorentzian")
-        return fit_model<T, batchfit::models::Lorentzian>(x, y, p0, lower, upper, metal);
+        return fit_model<T, batchfit::models::Lorentzian>(x, y, p0, lower, upper, metal,
+                                                          uncertainties);
     if (model == "pseudo_voigt")
-        return fit_model<T, batchfit::models::PseudoVoigt>(x, y, p0, lower, upper, metal);
+        return fit_model<T, batchfit::models::PseudoVoigt>(x, y, p0, lower, upper, metal,
+                                                           uncertainties);
     if (model == "two_lorentzian")
-        return fit_model<T, batchfit::models::TwoLorentzian>(x, y, p0, lower, upper, metal);
+        return fit_model<T, batchfit::models::TwoLorentzian>(x, y, p0, lower, upper, metal,
+                                                             uncertainties);
     throw std::invalid_argument("unknown fit model");
 }
 } // namespace
@@ -173,10 +201,10 @@ PYBIND11_MODULE(_core, module) {
     module.doc() = "Native batchfit buffer interface; use batchfit.fit for array preparation.";
     module.def("fit", &fit<float>, py::arg("x").noconvert(), py::arg("y").noconvert(),
                py::arg("p0"), py::arg("lower").noconvert(), py::arg("upper").noconvert(),
-               py::arg("model"), py::arg("metal"));
+               py::arg("model"), py::arg("metal"), py::arg("uncertainties") = false);
     module.def("fit", &fit<double>, py::arg("x").noconvert(), py::arg("y").noconvert(),
                py::arg("p0"), py::arg("lower").noconvert(), py::arg("upper").noconvert(),
-               py::arg("model"), py::arg("metal"));
+               py::arg("model"), py::arg("metal"), py::arg("uncertainties") = false);
     module.def("metal_available", [] {
         py::gil_scoped_release release;
         return batchfit::metal::available();

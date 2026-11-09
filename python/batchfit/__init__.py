@@ -9,7 +9,7 @@ import numpy as np
 from . import _core  # pyright: ignore[reportMissingModuleSource]
 
 __version__ = _core.__version__
-__all__ = ["fit", "FitResult", "FitStatus", "metal_available", "__version__"]
+__all__ = ["fit", "FitResult", "FitResultWithUncertainties", "FitStatus", "UncertaintyStatus", "metal_available", "__version__"]
 _PARAMETERS = {"gaussian": 3, "lorentzian": 3, "pseudo_voigt": 4, "two_lorentzian": 8}
 
 
@@ -29,6 +29,25 @@ class FitResult(NamedTuple):
     chi2: np.ndarray
 
 
+class UncertaintyStatus(IntEnum):
+    available = 0
+    not_converged = 1
+    insufficient_dof = 2
+    singular_matrix = 3
+    active_bound = 4
+    invalid_input = 5
+
+
+class FitResultWithUncertainties(NamedTuple):
+    params: np.ndarray
+    status: np.ndarray
+    iterations: np.ndarray
+    chi2: np.ndarray
+    covariance: np.ndarray
+    stderr: np.ndarray
+    uncertainty_status: np.ndarray
+
+
 def metal_available():
     """Whether this build has Metal and a supported device (no shader compilation)."""
     return _core.metal_available()
@@ -41,7 +60,7 @@ def _real_array(value, name):
     return array
 
 
-def fit(x, y, model="lorentzian", p0=None, bounds=None, device="auto"):
+def fit(x, y, model="lorentzian", p0=None, bounds=None, device="auto", *, uncertainties=False):
     """Fit shared x[M] and y[N,M]; return params[N,P], status/iterations/chi2[N].
 
     A single y[M] is accepted as N=1. CPU preserves float32/float64 precision;
@@ -54,6 +73,8 @@ def fit(x, y, model="lorentzian", p0=None, bounds=None, device="auto"):
         raise ValueError(f"unknown model {model!r}; choose one of {tuple(_PARAMETERS)}")
     if device not in ("auto", "cpu", "metal"):
         raise ValueError("device must be 'auto', 'cpu', or 'metal'")
+    if not isinstance(uncertainties,(bool,np.bool_)):
+        raise TypeError("uncertainties must be a boolean")
     x, y = _real_array(x, "x"), _real_array(y, "y")
     if x.ndim != 1 or not x.size:
         raise ValueError("x must have nonempty shape [M]")
@@ -86,4 +107,6 @@ def fit(x, y, model="lorentzian", p0=None, bounds=None, device="auto"):
             raise ValueError("finite bounds must be representable in the fitting dtype")
         lower = np.require(np.broadcast_to(lower, (p,)), dtype=dtype, requirements=["C", "A"])
         upper = np.require(np.broadcast_to(upper, (p,)), dtype=dtype, requirements=["C", "A"])
+    if uncertainties:
+        return FitResultWithUncertainties(*_core.fit(x,y,p0,lower,upper,model,metal,True))
     return FitResult(*_core.fit(x, y, p0, lower, upper, model, metal))

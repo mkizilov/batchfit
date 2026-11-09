@@ -27,6 +27,7 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "tests/mmap_check.cpp",
         root / "tests/pipeline_check.cpp",
         root / "tests/numerics_check.cpp",
+        root / "tests/uncertainty_check.cpp",
         root / "tests/metal_disabled_check.cpp",
         root / "bench/metal_baseline.cpp",
         root / "bench/cooperative_baseline.cpp",

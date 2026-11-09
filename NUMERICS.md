@@ -1,4 +1,4 @@
-# Float32 numerical robustness
+# Numerical robustness and uncertainty estimates
 
 ## Recommendation and scope
 
@@ -292,8 +292,178 @@ All **32 model/scalar/numerical-option** single fits pass zero-C++-heap allocati
 instrumentation. The separate full CSV validation and full 128-row dispatch gate
 also pass. No global tools/services, extra CPU workers or host settings were used.
 
+## Parameter uncertainties (turn 13)
+
+Covariance and marginal standard errors are **opt-in**. The default Python result
+still contains exactly four arrays, and default CPU/Metal batches allocate no
+N*P*P covariance, N*P standard-error or N uncertainty-status buffers.
+
+```python
+result = batchfit.fit(x, y, model="lorentzian", p0=p0, bounds=bounds,
+                      device="auto", uncertainties=True)
+result.covariance          # [N,P,P], row-major per fit
+result.stderr              # [N,P], sqrt(diag(covariance))
+result.uncertainty_status  # [N], separate from optimization status
+```
+
+Requested output is `FitResultWithUncertainties`, a seven-array named tuple whose
+first four fields retain the original meanings. Default `FitResult` and its
+four-array unpacking remain unchanged. Outputs use the fitting dtype (CPU
+float32/float64, Metal float32). A million P=8 float32 uncertainties alone cost
+**292 MB** including uncertainty status, so never request/allocate them implicitly.
+Unavailable estimates are NaN, never zero-filled successes.
+
+### Definition and numerical implementation
+
+At the **final accepted parameters**, recompute analytic J and the **undamped**
+information matrix H=J^T J. Never reuse a stale pre-trial Hessian or invert the LM
+matrix with artificial damping. With K estimated/free parameters and M points:
+
+```
+residual_variance = chi2 / (M - K)
+covariance_free = inverse(H_free) * residual_variance
+standard_error_i = sqrt(covariance_ii)
+```
+
+For ordinary unconstrained fits K=P. Equal finite bounds fix a parameter, exclude
+it from K, and give its conditional covariance row/column and standard error zero.
+All-fixed, otherwise valid solutions have zero parameter uncertainty. A free
+parameter at an inequality bound gets `active_bound`: a symmetric local Gaussian
+interval is not a valid description of its truncated sampling distribution.
+
+Both implementations use compensated information accumulation and checked,
+diagonally equilibrated Cholesky solves of identity columns. They do **not** add
+regularization or silently substitute a pseudoinverse. A non-positive factor or
+relative scaled pivot <=64*machine_epsilon is rejected as singular/ill-conditioned.
+Symmetric output is formed explicitly. Fit parameters, status, iteration count and
+objective are not changed when uncertainty estimation fails.
+
+The CPU estimator is `cpu::estimate_uncertainty<T,Model>(x,fit,options)` with fixed
+stack workspace. Single-fit result size/allocation behavior is unchanged. Batch
+CPU callers append `true` to `cpu::fit_batch(...,options,true)`. Shared-Metal callers
+request storage with `context.make_batch<Model>(N,M,true)` and read covariance /
+standard_errors / uncertainty_status from the result. Three extra shared buffers
+exist only in that case. A **separate GPU kernel** recomputes/inverts information
+after the fitting kernel in the same checked command buffer. No CPU covariance
+fallback is used for Metal, and default fitting shaders reserve no covariance
+workspace. Async completion waits for both passes before exposing/reusing data.
+
+Out-of-core `PipelineOptions.uncertainties=true` enables the same per-chunk output;
+automatic chunk sizing includes all extra buffers and checks N*P*P index/device
+limits. Callbacks retain their existing borrowed-view lifetime rules. The existing
+CLI remains unchanged unless a caller uses the optional C++/Python interface.
+Host `Coordinates::physical_covariance<Model>` maps normalized covariance with
+the **full** affine parameter Jacobian, including coupled baseline/slope terms:
+`C_physical = R C_normalized R^T`. Merely multiplying each standard error by a
+diagonal scale is wrong for the centered paired baseline. Do not rescale by chi2
+a second time after this transform.
+
+| Uncertainty status | Code | Output / interpretation |
+|---|---:|---|
+| available | 0 | Finite covariance and standard errors, including zeros for fixed parameters |
+| not_converged | 1 | Fit was not converged (including invalid, degenerate or unresolved); NaN estimates |
+| insufficient_dof | 2 | M<=K; residual variance cannot be estimated |
+| singular_matrix | 3 | Rank-deficient or numerically unreliable undamped information |
+| active_bound | 4 | A free parameter is on a box boundary; no symmetric Gaussian interval claimed |
+| invalid_input | 5 | Nonfinite parameters/x/objective/information or invalid scaling/bounds |
+
+### Monte Carlo marginal coverage: 10,000 realizations per model/backend
+
+Fixed true parameters, a shared 129-point grid on [-5,5], independent Gaussian
+noise **sigma=0.03** at every point, seed `20261110 + model_index`. Each backend
+uses the same generated realizations (float32 backends use the rounded stored
+data), so backend rows are paired comparisons, not independent Monte Carlo trials.
+Initial parameters are fixed **non-truth** guesses. Positive width/amplitude and
+mixing bounds stay well away from the true optimum; no boundary rows are discarded.
+
+| Model | True parameters in documented order |
+|---|---|
+| Gaussian | 2, 0.2, 0.7 |
+| Lorentzian | 2, 0.2, 0.7 |
+| Pseudo-Voigt | 2, 0.2, 1.4, 0.5 |
+| Two Lorentzians + baseline | 2, -1.5, 0.5, 1.7, 1.5, 0.6, 0.25, 0.01 |
+
+The predeclared gate is **68.2689% +/-2 percentage points for every parameter**.
+For 10,000 Bernoulli trials near 68%, sampling SE is about 0.466 percentage points;
+the gate is roughly 4.3 sampling SE, allowing modest nonlinear/estimated-variance
+effects without tuning a threshold after seeing results. The denominator is
+always 10,000; failed fits/unavailable estimates count as misses. All 120,000
+executions converged with available uncertainty, with **zero** dropped rows.
+
+Marginal coverage percentages, per parameter in order (these are not joint
+multivariate 68% confidence regions):
+
+| Model | Device / dtype | Parameter coverage (%) | Available / attempted |
+|---|---|---|---:|
+| Gaussian | CPU / float64 | 67.80, 67.90, 67.98 | 10000 / 10000 |
+| Gaussian | CPU / float32 | 67.79, 67.89, 67.96 | 10000 / 10000 |
+| Gaussian | Metal / float32 | 67.79, 67.89, 67.97 | 10000 / 10000 |
+| Lorentzian | CPU / float64 | 67.19, 68.42, 68.18 | 10000 / 10000 |
+| Lorentzian | CPU / float32 | 67.17, 68.41, 68.18 | 10000 / 10000 |
+| Lorentzian | Metal / float32 | 67.17, 68.42, 68.18 | 10000 / 10000 |
+| Pseudo-Voigt | CPU / float64 | 68.14, 67.99, 68.05, 68.06 | 10000 / 10000 |
+| Pseudo-Voigt | CPU / float32 | 68.12, 67.99, 68.05, 68.07 | 10000 / 10000 |
+| Pseudo-Voigt | Metal / float32 | 68.14, 68.00, 68.04, 68.08 | 10000 / 10000 |
+| Two Lorentzians | CPU / float64 | 69.07, 68.17, 68.45, 67.61, 68.61, 68.23, 67.83, 67.78 | 10000 / 10000 |
+| Two Lorentzians | CPU / float32 | 69.07, 68.17, 68.44, 67.61, 68.61, 68.22, 67.85, 67.77 | 10000 / 10000 |
+| Two Lorentzians | Metal / float32 | 69.07, 68.17, 68.44, 67.61, 68.61, 68.22, 67.85, 67.78 | 10000 / 10000 |
+
+All marginal entries are **67.17%–69.07%**. Empirical parameter standard deviation
+divided by mean reported SE ranges about **0.988–1.018**. This supports the local
+Gaussian uncertainty approximation in these resolved, interior, homoscedastic
+cases; it does not establish coverage for blends with poor identifiability,
+active constraints, very low SNR, heteroscedastic/correlated errors or wrong models.
+M is finite and variance is estimated, so exact Normal(0,1) coverage is not claimed.
+The coverage run uses safe/precise automatic Metal dispatch; separate matrix tests
+exercise every forced kernel, SIMD tails, requested/off storage and async/chunk reuse.
+
+### Failure found by validation, not hidden by a wider band
+
+The initial Metal paired covariance failed independent SciPy matrix comparisons
+and gave **62.27%–72.37%** coverage. CPU and other models were already near 68%.
+GPU information-matrix probes before/after an in-place private-array symmetry copy
+showed lower-triangle entries clobbered on this toolchain, even though the upper
+triangle had the correct values. The corrected kernel leaves the accumulated
+lower triangle untouched, applies fixed-coordinate masking while loading a factor,
+and symmetrizes only when writing output. No claim about a general compiler bug
+is needed to rely on this mathematically sufficient lower-triangle algorithm.
+All probes/temporary returns were removed. The **same** matrix tolerances and
+Monte Carlo band then pass, without CPU fallback, reseeding or excluding results.
+
+### Uncertainty verification and reproduction
+
+```sh
+sh scripts/check.sh
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python -m pytest python/tests/test_uncertainty.py -q -s
+```
+
+The latter command prints exact per-parameter coverage, available denominators and
+empirical-STD/mean-SE ratios. The ordinary gate includes all 10,000-realization
+coverage tests; Metal is required on macOS, not silently skipped. Independent
+`curve_fit` covariance checks use its default reduced-chi-squared scaling, plus
+hand-computed linear-model algebra/fixed-parameter DOF checks and CPU/GPU accepted-
+parameter information-inverse comparisons. Tests assert that requesting errors
+does not change the original fit arrays and that disabled output vectors/buffers
+are absent. Zero-heap single-fit instrumentation includes explicit covariance.
+The separate no-uncertainty 128-row Release dispatch rerun has zero CPU parity
+errors and maximum automatic-selection regret **1.77423%**, inside the unchanged
+5% budget (`profiling/uncertainty_dispatch_results.csv`). No policy change was
+needed for this optional post-fit pass. The CPU-only Python build also passes
+its applicable uncertainty/coverage tests with expected Metal-only skips.
+Final combined gate: **25 CPU CTests, 35 Metal CTests and 73 Python tests** pass,
+including all prior fitting checks. The CPU-only editable build passes **59 tests
+with 14 expected Metal-only skips**; the Metal-enabled install is restored.
+ASan/UBSan plus Metal API/shader validation and instrumented C++/Objective-C++ TSan
+uncertainty/pipeline checks pass. Python's debug allocator suite passes, as does
+the independent SDK fitting oracle (2,832 comparisons). No LeakSanitizer or
+cross-platform/Python-version wheel matrix was run. Indexed C++ diagnostics stay
+partial without a root compile database; actual compiler/tidy and Python document
+diagnostics pass. Temporary sanitizer builds/probes are removed.
+
 ### References
 
 - [Metal compile options and math modes](https://developer.apple.com/documentation/metal/mtlcompileoptions)
 - [Metal mathMode / fastMathEnabled mapping](https://developer.apple.com/documentation/metal/mtlcompileoptions/mathmode)
 - [MSL function constants](https://github.com/dogukanveziroglu/metal-shading-language-specification/blob/main/ch05-function-variable-declarations.md)
+- [SciPy curve_fit covariance scaling](https://docs.scipy.org/doc/scipy-1.13.1/reference/generated/scipy.optimize.curve_fit.html)

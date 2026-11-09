@@ -1,6 +1,7 @@
 #pragma once
 
 #include <batchfit/cpu/solver.hpp>
+#include <batchfit/cpu/uncertainty.hpp>
 #include <batchfit/metal/types.hpp>
 #include <batchfit/models.hpp>
 
@@ -68,6 +69,9 @@ struct Storage {
     Config *config;
     std::shared_ptr<void> resources;
     std::atomic<bool> busy{false};
+    bool uncertainties = false;
+    std::span<float> covariance{}, standard_errors{};
+    std::span<UncertaintyStatus> uncertainty_status{};
 };
 struct BusyLease {
     explicit BusyLease(Storage &value) : storage(value) {
@@ -129,6 +133,11 @@ class SharedBatch {
         s.status = {s.status.data(), fits};
         s.iterations = {s.iterations.data(), fits};
         s.chi_squared = {s.chi_squared.data(), fits};
+        if (s.uncertainties) {
+            s.covariance = {s.covariance.data(), fits * s.p * s.p};
+            s.standard_errors = {s.standard_errors.data(), fits * s.p};
+            s.uncertainty_status = {s.uncertainty_status.data(), fits};
+        }
     }
 
   private:
@@ -154,13 +163,13 @@ class Context {
     explicit Context(MathMode mode);
     DeviceLimits limits() const;
     template <template <typename> class Model>
-    SharedBatch make_batch(std::size_t n, std::size_t m) const {
+    SharedBatch make_batch(std::size_t n, std::size_t m, bool uncertainties = false) const {
         (void)detail::kernel_index<Model>();
-        return allocate(n, m, Model<float>::parameter_count);
+        return allocate(n, m, Model<float>::parameter_count, uncertainties);
     }
 
   private:
-    SharedBatch allocate(std::size_t n, std::size_t m, unsigned p) const;
+    SharedBatch allocate(std::size_t n, std::size_t m, unsigned p, bool uncertainties) const;
     std::shared_ptr<detail::Runtime> runtime_;
 };
 
@@ -170,12 +179,18 @@ struct Result {
     std::span<const unsigned> iterations;
     std::span<const float> chi_squared;
     Timings timings;
+    std::span<const float> covariance, standard_errors;
+    std::span<const UncertaintyStatus> uncertainty_status;
+    bool has_uncertainties;
     Result(const SharedBatch &batch, Timings times) : Result(batch.storage_, times) {}
 
   private:
     Result(std::shared_ptr<detail::Storage> storage, Timings times)
         : parameters(storage->parameters), status(storage->status), iterations(storage->iterations),
-          chi_squared(storage->chi_squared), timings(times), owner_(std::move(storage)) {}
+          chi_squared(storage->chi_squared), timings(times), covariance(storage->covariance),
+          standard_errors(storage->standard_errors),
+          uncertainty_status(storage->uncertainty_status),
+          has_uncertainties(storage->uncertainties), owner_(std::move(storage)) {}
     std::shared_ptr<detail::Storage> owner_;
     friend class PendingBatch;
 };
@@ -280,6 +295,14 @@ fit_batch(metal::SharedBatch &batch, Device device,
         data.status[i] = result.status;
         data.iterations[i] = result.iterations;
         data.chi_squared[i] = result.chi_squared;
+        if (data.uncertainties) {
+            const auto estimate = cpu::estimate_uncertainty<float, Model>(data.x, result, options);
+            std::copy(estimate.covariance.begin(), estimate.covariance.end(),
+                      data.covariance.data() + i * p * p);
+            std::copy(estimate.standard_errors.begin(), estimate.standard_errors.end(),
+                      data.standard_errors.data() + i * p);
+            data.uncertainty_status[i] = estimate.status;
+        }
     }
     return {
         batch,

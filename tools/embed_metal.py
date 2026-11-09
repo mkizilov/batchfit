@@ -26,6 +26,7 @@ def expand(path):
 
 source = expand(root / "src/metal/lm.metal")
 source += expand(root / "src/metal/cooperative.metal")
+source += expand(root / "src/metal/uncertainty.metal")
 profile = len(sys.argv) == 3 and sys.argv[2] == "--profile"
 if profile:
     source += expand(root / "src/metal/profile_variants.metal")

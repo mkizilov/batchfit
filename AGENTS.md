@@ -118,6 +118,10 @@ Extend this file with the project's language-specific architecture and verificat
 - Python auto preserves float64 on CPU and uses available Metal for float32.
   Keep public/private stubs and py.typed packaged. Pytest retains every row in
   its 1,000-per-model SciPy comparisons; never relax the precision tolerances.
+- Uncertainties are opt-in: recompute undamped information at the accepted fit,
+  scale by chi2/(M-P_free), and keep fit/uncertainty statuses separate. Preserve
+  absent default buffers, active-bound/singular diagnostics, GPU-only covariance
+  dispatch and all-denominator 10,000-realization coverage tests in NUMERICS.md.
 
 ## Setup and verification
 

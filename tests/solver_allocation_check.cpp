@@ -1,4 +1,5 @@
 #include <batchfit/cpu/solver.hpp>
+#include <batchfit/cpu/uncertainty.hpp>
 #include <batchfit/models.hpp>
 
 #include <array>
@@ -55,8 +56,10 @@ template <typename T, template <typename> class Model> void check() {
         allocations = 0;
         tracking = true;
         const auto result = batchfit::cpu::fit_single<T, Model>(x, y, initial, options);
+        const auto uncertainty = batchfit::cpu::estimate_uncertainty<T, Model>(x, result, options);
         tracking = false;
-        if (allocations != 0 || result.status != batchfit::FitStatus::converged)
+        if (allocations != 0 || result.status != batchfit::FitStatus::converged ||
+            uncertainty.status != batchfit::UncertaintyStatus::available)
             throw std::runtime_error(
                 "solver allocated or failed during allocation instrumentation");
     }

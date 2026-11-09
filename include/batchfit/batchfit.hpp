@@ -4,6 +4,7 @@
 #include <batchfit/cpu/batch.hpp>
 #include <batchfit/cpu/initial_guess.hpp>
 #include <batchfit/cpu/solver.hpp>
+#include <batchfit/cpu/uncertainty.hpp>
 #include <batchfit/metal/batch.hpp>
 #include <batchfit/metal/pipeline.hpp>
 #include <batchfit/models.hpp>

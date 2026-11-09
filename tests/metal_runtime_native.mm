@@ -77,12 +77,15 @@ Context::Context() : runtime_(std::make_shared<detail::Runtime>()) {
     }
 }
 
-SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p) const {
+SharedBatch Context::allocate(std::size_t n, std::size_t m, unsigned p, bool uncertainties) const {
+    detail::require(
+        !uncertainties,
+        "test-only SDK adapter does not implement uncertainty dispatch; use production metal-cpp");
     const auto counts = detail::buffer_counts(n, m, p);
     @autoreleasepool {
         auto resources = std::make_shared<detail::Resources>();
         resources->runtime = runtime_;
-        std::array<void *, 8> pointers{};
+        std::array<void *, 11> pointers{};
         for (unsigned k = 0; k < 8; ++k) {
             if (counts[k] == 0)
                 continue;

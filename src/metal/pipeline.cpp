@@ -35,9 +35,12 @@ std::size_t choose_chunk_fits(DeviceLimits limits, std::size_t fits, std::size_t
     if (points > limits.max_buffer_bytes / 4 || sizeof(detail::Config) > limits.max_buffer_bytes)
         throw std::invalid_argument("pipeline x/config exceeds maxBufferLength");
     const auto index_limit = std::numeric_limits<std::uint32_t>::max();
-    const auto maximum =
+    auto maximum =
         std::min({limits.max_buffer_bytes / 4 / points, limits.max_buffer_bytes / 4 / p,
                   std::size_t(index_limit) / points, std::size_t(index_limit) / p, fits});
+    if (options.uncertainties)
+        maximum = std::min(
+            {maximum, limits.max_buffer_bytes / 4 / p / p, std::size_t(index_limit) / p / p});
     if (fits == 0)
         return 0;
     if (maximum == 0)
@@ -53,7 +56,8 @@ std::size_t choose_chunk_fits(DeviceLimits limits, std::size_t fits, std::size_t
             ? std::min(std::size_t(256) << 20, limits.recommended_working_set_bytes / 8)
             : std::size_t(64) << 20;
     const auto fixed = options.in_flight * (points * 4 + sizeof(detail::Config));
-    const auto per_fit = options.in_flight * (points * 4 + std::size_t(p) * 8 + 12) +
+    const auto extra = options.uncertainties ? (std::size_t(p) * p + p + 1) * 4 : 0;
+    const auto per_fit = options.in_flight * (points * 4 + std::size_t(p) * 8 + 12 + extra) +
                          points * (4 + input_bytes) + p * initial_bytes;
     if (budget <= fixed || per_fit > budget - fixed)
         throw std::invalid_argument("device working-set budget cannot hold one pipeline fit");
@@ -109,7 +113,9 @@ PipelineStats detail::stream_npy(Context &context, const NpyInput &input, unsign
     }
     stats.shared_payload_bytes =
         schedule.in_flight *
-        (capacity * (m * 4 + std::size_t(p) * 8 + 12) + m * 4 + sizeof(Config));
+        (capacity * (m * 4 + std::size_t(p) * 8 + 12 +
+                     (schedule.uncertainties ? (std::size_t(p) * p + p + 1) * 4 : 0)) +
+         m * 4 + sizeof(Config));
     std::mutex mutex;
     std::condition_variable changed;
     std::deque<std::size_t> queued;

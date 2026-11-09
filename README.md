@@ -33,6 +33,12 @@ result = batchfit.fit(x, y, model="lorentzian", p0=None, bounds=None, device="au
 params, status, iterations, chi2 = result  # also result.params, result.status, ...
 ```
 
+Request `uncertainties=True` for additional `result.covariance`, `result.stderr`
+and `result.uncertainty_status` arrays. The default four-array result allocates
+no uncertainty buffers; requested covariance is recomputed at the accepted
+solution and scaled by reduced chi-squared. See NUMERICS.md for assumptions,
+failure diagnostics and measured 10,000-realization coverage per model/device.
+
 Use shared `x[M]`, fit-major `y[N,M]` (or a single `y[M]`). Outputs are NumPy
 arrays `[N,P]`, `[N]`, `[N]`, `[N]`. CPU borrows suitable contiguous arrays and
 preserves float64; auto uses Metal for float32 when available. Explicit Metal

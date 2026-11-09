@@ -14,6 +14,7 @@ struct PipelineOptions {
     std::size_t chunk_fits = 0;
     unsigned in_flight = 3;
     KernelVariant variant = KernelVariant::Automatic;
+    bool uncertainties = false;
 };
 struct PipelineEvent {
     std::size_t first_fit = 0, fits = 0;
@@ -52,7 +53,9 @@ PipelineStats fit_npy(Context &context, const NpyInput &input, const ChunkConsum
     constexpr unsigned p = Model<float>::parameter_count;
     return detail::stream_npy(
         context, input, p, schedule, consume, observe,
-        [&](std::size_t n, std::size_t m) { return context.make_batch<Model>(n, m); },
+        [&](std::size_t n, std::size_t m) {
+            return context.make_batch<Model>(n, m, schedule.uncertainties);
+        },
         [](std::span<const float> x, std::span<const float> y, std::span<float> initial) {
             const auto result = cpu::initial_guess<float, Model>(x, y);
             std::copy(result.parameters.begin(), result.parameters.end(), initial.begin());
