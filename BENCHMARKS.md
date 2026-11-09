@@ -1,5 +1,9 @@
 # Benchmarks
 
+Current check/support scope is tracked in [VERIFICATION.md](VERIFICATION.md).
+The local gate reruns bounded smokes, not the full retained performance studies
+below; limitations and original workload/measurement provenance remain attached.
+
 ## Turn 14: unified Python-loop, CPU and Metal sweep
 
 `bench/run.py` drives the Release-only `bench/bindings.cpp` adapter and generates

@@ -1,5 +1,9 @@
 # Numerical robustness and uncertainty estimates
 
+See [VERIFICATION.md](VERIFICATION.md) for current check/support scope. The
+accuracy tables below are retained full-study evidence; the ordinary gate runs
+the numerical smoke and full uncertainty coverage, not a new accuracy sweep.
+
 ## Recommendation and scope
 
 For difficult units/ranges, **normalize in double on the CPU before converting

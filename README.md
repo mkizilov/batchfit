@@ -11,6 +11,12 @@ numerical source of truth; GPU results are checked against it.
 - Python: contiguous-input borrowing, GIL release, NumPy outputs and `.pyi` stubs.
 - Diagnostics: fit/uncertainty statuses, checked Metal errors, CPU parity and Monte Carlo coverage tests.
 
+**Status:** implemented and locally verified, not universally validated across
+devices or inputs. See [the capability/evidence matrix](VERIFICATION.md) and
+[prioritized future work](ROADMAP.md). Metal System Trace/shader-profiler metrics,
+other-device/OS/Python coverage and a standalone C++ install package remain open;
+three allocated pipeline slots do not imply three pending large-file commands.
+
 ## Build and install locally
 
 Requirements: a C++20 compiler, CMake 3.24+, and Python **3.9–3.12** for the pinned
@@ -211,28 +217,14 @@ sh scripts/check.sh                 # complete gate; Metal required on macOS
 sh scripts/check.sh --cpu-only      # same CPU-only gate; no Metal tests/fetch
 ```
 
-The gate runs formatting, clang-tidy, normal C++ suites, **all C++ tests again
-under combined AddressSanitizer + UndefinedBehaviorSanitizer**, then required GPU
-tests with **`MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`**. Python tests, uncertainty
-coverage, generator/pipeline checks, bounded benchmark smoke and actual Jupyter
-demo execution are included. Builds/tests have at most two workers; large Release
-performance studies are explicit commands, never implicit CI workloads.
-
-Sanitizer builds are temporary project-local directories removed on success or
-failure; findings stop the gate. The only UBSan ignorelist entry is Apple's
-documented metal-cpp Objective-C nil-message bridge in `Foundation/NSObject.hpp`;
-batchfit code stays instrumented. LeakSanitizer is not part of this gate. Python
-bindings are tested normally (not claimed as an ASan-instrumented interpreter).
-No GitHub Actions run or cross-platform/Python-version matrix is implied by a
-local pass. See [project rules](AGENTS.md) for the exact acceptance definition.
-
-Verified locally on CPython 3.9.6/macOS arm64: **25 CPU + 35 Metal CTests** pass
-normally and again under ASan/UBSan (**120 CTest executions**), with API/shader
-validation on both Metal runs; **73 Python tests** also pass with those GPU
-layers enabled, followed by the full notebook and 56-case benchmark smoke.
-The CPU-only mode passes its normal/sanitized suites and applicable Python/demo
-checks. A deliberate bad sanitizer compiler flag was verified to fail nonzero
-and clean its temporary build. No validation-layer findings were suppressed.
+The gate covers formatting, clang-tidy, normal and **combined ASan/UBSan C++
+suites**, Metal tests with **`MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`**, Python
+agreement/coverage, CLI checks, bounded benchmark smoke and actual IPC-kernel
+notebook execution. Ordinary builds/tests use at most two workers; large Release
+studies are explicit, not part of the gate. Sanitizer findings stop the gate;
+batchfit code is not suppressed. See [VERIFICATION.md](VERIFICATION.md) for exact
+counts, upstream-only UBSan exclusion, cleanup, historical vs current checks and
+unverified platforms/tooling. A CPU-only or local pass is not a GPU/CI matrix pass.
 
 ## Demo and further documentation
 
@@ -242,6 +234,8 @@ parameter/status/error maps and a real `cube.npy[H,W,M]` + `x.npy[M]` example.
 [Project-local Jupyter setup and limitations](examples/README.md).
 
 - [Design and model/API contracts](DESIGN.md)
+- [Verification commands, capability/evidence matrix and limitations](VERIFICATION.md)
+- [Prioritized roadmap, acceptance criteria and effort estimates](ROADMAP.md)
 - [Python API, statuses, copies, ownership and build details](python/README.md)
 - [Benchmark results and reproducible plots](BENCHMARKS.md)
 - [Numerical accuracy and uncertainty coverage](NUMERICS.md)

@@ -101,8 +101,12 @@ UBSAN_OPTIONS=halt_on_error=1 ASAN_OPTIONS=detect_leaks=0 MTL_DEBUG_LAYER=1 MTL_
 Use a separate build with `-fsanitize=thread -fno-omit-frame-pointer` for both
 CXX/OBJCXX flags, `-fsanitize=thread` for executable linking and
 `TSAN_OPTIONS=halt_on_error=1`; do not combine TSan with ASan. Scratch sanitizer
-builds are removed at handoff. The ordinary `scripts/check.sh` gate is independent
-and includes both presets, all CTests, selected clang-tidy checks and CLI checks.
+builds should be removed after their owning manual checks finish. The ordinary
+`scripts/check.sh` gate now repeats **all** CPU and Metal CTests under combined
+ASan/UBSan and enables API/shader validation on normal and sanitized Metal runs;
+the recipe above is only a focused debugging subset. It also runs Python,
+notebook, selected clang-tidy and CLI checks. TSan remains separate and manual.
+See [VERIFICATION.md](VERIFICATION.md) for current scope and limitations.
 Indexed diagnostics remain partial without a root compile-database marker;
 actual builds and clang-tidy against the build databases are authoritative here.
 

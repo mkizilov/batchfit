@@ -1,20 +1,17 @@
-# batchfit: project boundaries and working agreement
+# batchfit: repository working agreement
 
-- Work only in `/Users/mk-rune/test_projects/13-batchfit`. This is one of fourteen independent repositories.
+- Work only within this repository.
 - Do not read, modify, clean up, or run commands in sibling repositories or the user's configuration.
-- Work autonomously: choose sensible defaults and document assumptions; do not ask questions or delegate.
 - Never install anything globally or use sudo, Homebrew, launchd, host credentials, or host Docker sockets.
 - Dependencies, toolchains, caches, browser binaries, SDKs, temporary files and test data stay in this repository. Preserve the supplied project-local environment. Python packages go in `.venv`.
-- `.agent-local/` is ignored, project-local build/runtime state. `.opencode/` is managed orchestration configuration; do not change or remove it or bypass the sandbox.
+- `.agent-local/` is ignored, project-local build/runtime state. `.opencode/` is protected tooling configuration; do not change or remove it or bypass the sandbox.
 - Use existing system tools read-only, or install pinned tools under this repository. Do not change shell profiles, user settings, Keychain, or global Git settings.
 - Bind test servers to loopback; use ports 22200–22299. Limit build/test workers to two unless a required benchmark explicitly needs more.
 - Docker-dependent integration tests must remain reproducible but be reported as unverified here if they require access outside this repository. Do not bypass this boundary.
 - Do not touch attached hardware, enroll services, flash firmware, install agents, or alter OS settings. Supply manual checklists for such steps.
-- Implement only the current numbered prompt, preserving prior behavior. Run appropriate checks, fix failures, and report genuine limitations without fabricating test or benchmark results.
-- Before finishing every numbered turn: stop its servers/watchers, remove scratch outputs, update relevant documentation, and make a local conventional-commit Git commit. Do not push.
-- End each turn with a short summary of changes, checks actually run, remaining limitations, and commit hash. The orchestrator will provide the next prompt only after this turn ends.
-
-Extend this file with the project's language-specific architecture and verification commands while retaining these boundaries.
+- Keep changes scoped to the requested work and preserve unrelated changes. Fix failures without weakening tests or fabricating test/benchmark results.
+- Stop owned servers/watchers, remove owned scratch outputs, update relevant documentation and make a local conventional commit. Preserve existing Git history; do not push.
+- Report changes, checks actually run, remaining limitations and the commit hash.
 
 ## Architecture
 
@@ -27,15 +24,16 @@ Extend this file with the project's language-specific architecture and verificat
 - Check and report every Metal error with context: shader compilation, kernel
   lookup, pipeline creation, resource/encoder allocation and command-buffer
   completion status. An explicit Metal request must not silently fall back.
-- The initial residual smoke primitive is not the LM fitting implementation.
-  Follow `DESIGN.md` for the eventual public fitting contract and precision rules.
+- Public fitting contracts and precision rules are in `DESIGN.md`. Residual smoke
+  tests do not establish full LM solver correctness.
 - The single-fit CPU reference is `include/batchfit/cpu/solver.hpp` (header-only
   for model/scalar template instantiation). Keep all workspace fixed-size and on
   the stack. Preserve checked Cholesky, exact diagonal damping, best accepted
   state, projected box constraints and the documented stopping/status semantics.
 - Model/noise/scalar recovery, all failure statuses and allocation instrumentation
-  must pass for solver changes. Metal v1 has explicit remaining parity limits
-  documented in BENCHMARKS.md; never hide them by relaxing tests or CPU fallback.
+  must pass for solver changes. Preserve BENCHMARKS.md's distinction between
+  current passing matrices, stricter diagnostics and historical seed failures;
+  never hide mismatches by relaxing tests or CPU fallback.
 - Batched CPU fitting lives in `include/batchfit/cpu/batch.hpp`; its reusable
   std::jthread pool is in `src/cpu/thread_pool.cpp`. Preserve per-row reference
   results, disjoint writes, synchronous completion and exception-safe pool reuse.
@@ -77,9 +75,9 @@ Extend this file with the project's language-specific architecture and verificat
   spans, v1/thread, SIMD/fit and threadgroup/fit. Preserve uniform collective
   barriers, the forced-v1 path, #line diagnostics, safe/precise math,
   pipeline-derived groups, checked command status/error, and both timing domains.
-- `tests/metal_runtime_native.mm` is test-only SDK verification when metal-cpp
-  downloads fail; never link it into production or claim it verifies NS::SharedPtr
-  host compilation. CMake Metal tests link the actual metal-cpp driver.
+- `tests/metal_runtime_native.mm` is an independent test-only SDK oracle; never
+  link it into production or claim it verifies NS::SharedPtr host compilation.
+  CMake Metal tests link the actual metal-cpp driver.
 - Profiling capture is opt-in (`BATCHFIT_GPU_CAPTURE=1`), first dispatch only,
   under `profiling/`, with overwrite refusal and partial-output cleanup. Preserve
   requested traces for inspection, never commit their binary bundles.
@@ -114,7 +112,8 @@ Extend this file with the project's language-specific architecture and verificat
 - Safe/precise remains default. Fast libraries are experimental; preserve bitwise
   nonfinite guards, degenerate/unresolved statuses and NUMERICS.md's actual error
   tables. The full study keeps failed denominators and compares every kernel to
-  CPU64. Gaussian's current v1/SIMD threshold is 1024, not the archived turn-9 512.
+  CPU64. Gaussian's current v1/SIMD threshold is 1024; keep older calibration
+  results labeled as historical rather than rewriting their provenance.
 - Python CPU inputs borrow aligned native C-contiguous float32/float64 buffers;
   no forcecast is allowed at the native entry. Preserve owners across GIL release,
   capsule-owned result arrays, required Metal transpose/conversion, two native
@@ -185,9 +184,14 @@ Only Apple's upstream nil-message bridge is excluded from UBSan, never batchfit
 code. Sanitizer builds are temporary and removed even on failure. No Docker or
 persistent server process is needed.
 
-## Definition of done for every future task
+`VERIFICATION.md` is the current capability/evidence matrix and canonical check
+guide. `ROADMAP.md` prioritizes remaining gaps; planned behavior is not implemented
+or verified behavior. Large retained benchmark studies are not silently rerun by
+the ordinary gate, and unavailable Xcode metrics stay explicitly unverified.
 
-1. Implement only the current numbered task and preserve earlier behavior.
+## Definition of done
+
+1. Implement only the requested work and preserve earlier behavior.
 2. `scripts/check.sh` passes; if an environment constraint prevents this, state
    exactly which commands failed or were not run, with actual subset results.
 3. Update relevant documentation and remove temporary outputs/stop owned processes.
