@@ -126,6 +126,10 @@ Extend this file with the project's language-specific architecture and verificat
   scale by chi2/(M-P_free), and keep fit/uncertainty statuses separate. Preserve
   absent default buffers, active-bound/singular diagnostics, GPU-only covariance
   dispatch and all-denominator 10,000-realization coverage tests in NUMERICS.md.
+- `tools/check_demo.py` executes the full hyperspectral notebook in fresh
+  project-local IPC kernels, including its real-NPY branch. Keep defect rows,
+  truth-free initialization and recovery assertions; default checks never rewrite
+  the notebook or leave Jupyter/kernel processes or scratch data behind.
 
 ## Setup and verification
 

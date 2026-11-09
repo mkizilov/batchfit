@@ -34,6 +34,7 @@ if [ "$(uname -s)" = Darwin ]; then
     python3 tools/check_numerics.py build/metal/batchfit_numerics_study
 fi
 sh scripts/check_python.sh
+python3 tools/check_demo.py
 if [ "$(uname -s)" = Darwin ]; then
     python3 tools/check_benchmarks.py
     python3 tools/run_tidy.py build/benchmark-suite bench/bindings.cpp

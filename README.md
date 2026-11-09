@@ -12,6 +12,10 @@ The [unified benchmark](bench/README.md) compares SciPy loops, CPU and forced/
 automatic Metal paths from 1,000 to 10 million fits with bounded memory. Measured
 GPU/wall times, small-batch crossovers and saved log-log figures are in
 [BENCHMARKS.md](BENCHMARKS.md#turn-14-unified-python-loop-cpu-and-metal-sweep).
+The executed [hyperspectral notebook](examples/hyperspectral_demo.ipynb) fits a
+512×512 spectral image, visualizes parameter/status/error maps and demonstrates
+real `cube.npy[H,W,M]` plus `x.npy[M]` loading. See [examples/README.md](examples/README.md)
+for project-local Jupyter startup and verification commands.
 
 ```cpp
 #include <batchfit/models.hpp>
