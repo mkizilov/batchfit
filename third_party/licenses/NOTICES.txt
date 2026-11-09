@@ -1,0 +1,29 @@
+Third-party notices
+
+These notices retain upstream terms; the project's MIT license does not replace
+them. Downloaded dependency implementations are not committed in this repository.
+
+metal-cpp macOS15/iOS18
+Copyright 2020-2024 Apple Inc.
+Source: https://developer.apple.com/metal/cpp/files/metal-cpp_macOS15_iOS18.zip
+License: metal-cpp-LICENSE.txt (unmodified upstream text).
+Metal-enabled binaries include header implementation from this dependency.
+
+pybind11 3.0.1
+Copyright (c) 2016 Wenzel Jakob <wenzel.jakob@epfl.ch>, All rights reserved.
+Source: https://github.com/pybind/pybind11/tree/v3.0.1
+License: pybind11-LICENSE.txt (unmodified upstream text).
+The Python extension includes header implementation from this dependency.
+
+GoogleTest 1.15.2 (native test builds only)
+Copyright 2008, Google Inc. All rights reserved.
+Source: https://github.com/google/googletest/tree/v1.15.2
+License: googletest-LICENSE.txt (unmodified upstream text).
+
+Google Benchmark 1.9.4 (benchmark builds only)
+Copyright 2015 Google Inc. All rights reserved.
+Source: https://github.com/google/benchmark/tree/v1.9.4
+License: googlebenchmark-LICENSE.txt (unmodified upstream text).
+
+Dependency archives retain their own complete source notices. Python runtime
+dependencies are installed separately and are not bundled into batchfit wheels.

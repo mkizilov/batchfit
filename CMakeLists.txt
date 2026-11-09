@@ -36,6 +36,7 @@ if(BATCHFIT_METAL)
     # The versioned Apple archive is downloaded only for Metal builds.
     FetchContent_Declare(metal_cpp
         URL https://developer.apple.com/metal/cpp/files/metal-cpp_macOS15_iOS18.zip
+        URL_HASH SHA256=0433df1e0ab13c2b0becbd78665071e3fa28381e9714a3fce28a497892b8a184
         SOURCE_DIR "${PROJECT_SOURCE_DIR}/third_party/metal-cpp"
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_MakeAvailable(metal_cpp)

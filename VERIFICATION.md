@@ -57,27 +57,62 @@ tools/caches and requested profiling captures are preserved, not treated as junk
 
 ## Executed local evidence
 
-The complete gate was rerun and passed in the **2026-11-08 documentation review**
-(native/script base `de3d200`) on **Mac16,10 / Apple M4, macOS arm64, CPython
-3.9.6**, using Apple Clang 21 and project-local pinned tools. Executed coverage:
+The complete gate was rerun and passed in the **2026-11-08 pre-publication pass**
+(source base `2764a59` plus the licensing/integrity/privacy changes) on
+**Mac16,10 / Apple M4, macOS arm64, CPython 3.9.6**, using Apple Clang 21 and
+project-local pinned tools. Executed coverage:
 
 - **25 CPU + 35 Metal CTests**, each normally and again under combined
   ASan/UBSan: **120 CTest executions**, all passed. Metal API/shader validation
   applies to both Metal executions; no reported validation findings were hidden.
-- **73 Python tests** passed with both Metal validation layers, including the
-  10,000-realization/model/backend coverage tests and 1,000/model SciPy comparisons.
+- **74 Python tests** passed with both Metal validation layers, including the
+  10,000-realization/model/backend coverage tests, 1,000/model SciPy comparisons
+  and installed-license metadata/text regression check.
 - Full **512×512×129** notebook: 262,144 submitted pixels, all **262,132 healthy**
   pixels converged and **12 defects** flagged; real read-only NPY cases also pass.
 - The **56-case** bounded benchmark smoke, generator/pipeline/numerics checks,
   formatting and native/binding clang-tidy passed. Lock and Git whitespace checks
   passed separately. Debug smoke timing is not new performance calibration.
 
-The preceding validation work also executed the CPU-only gate: normal/sanitized
-CPU suites, **59 Python passes / 14 expected Metal-only skips**, and the full CPU
-notebook. A deliberate invalid sanitizer compiler flag verified fail-closed exit
-and temporary-build cleanup. README Python/C++ quickstarts were compiled/executed.
-These historical subset checks are identified as such, not extra runs in the
-latest full gate.
+This pass also rebuilt the CPU-only Python package: **60 passes / 14 expected
+Metal-only skips**, with binding clang-tidy. The full gate restored the
+Metal-enabled editable install. Earlier validation separately passed the full
+CPU notebook, deliberate invalid-compiler-flag failure/cleanup check and README
+Python/C++ quickstarts; those historical checks are not claimed as extra reruns
+in the latest gate.
+
+## Additional pre-publication checks
+
+- Fresh project-local PyPI installation of pinned pybind11 3.0.1 and HTTPS
+  downloads from GitHub and Apple succeeded. Earlier DNS/registry restrictions
+  are historical, not a current reason to skip a build. Existing uv 0.9.8,
+  CMake 3.31.6 and clang-tidy 21.1.6 remain local and pinned.
+- GoogleTest/Benchmark archive hashes matched their existing pins. The new
+  metal-cpp SHA-256 pin matches a fresh archive and all 98 installed files byte
+  for byte; CMake accepted the correct digest and rejected a deliberately wrong
+  one. This verifies reviewed-byte reproducibility, not a vendor-signed digest.
+- Built the source distribution, then a wheel **from that distribution** using
+  the normal backend. Both contain the exact project/upstream notice files,
+  MIT metadata and no protected configuration, local environments or build/cache
+  payloads. An isolated install, without editable redirection, passed CPU64 and
+  Metal32 fitting/covariance with API/shader validation. The inspected wheel is
+  `cp39-cp39-macosx_27_0_arm64`; it is **not** proof of macOS 15 binary compatibility
+  or a cross-version/platform distribution matrix.
+- Reachable-history review examined **329 Git blobs across all existing refs**
+  (about 8.9 MB) with private-key, common provider-token, credential-URL and
+  literal-secret patterns; no such findings or tracked dependency caches/private
+  key files were found. This bounded pattern review is not a formal security
+  audit or a proof that every possible secret format is absent. The final staged
+  review also covered all **160 tracked files**, with no secret-pattern,
+  personal-working-path, explicit creation-attribution or cache/private-file
+  findings; standard copyrights and upstream notices remain intact.
+- Current benchmark metadata and notebook setup output now avoid personal
+  absolute paths; smoke checks guard new outputs. Earlier versions remain in
+  Git history: `925d148:AGENTS.md`,
+  `30161ed:bench/results/metadata.json`, and
+  `aef25d0:examples/hyperspectral_demo.ipynb`. These contain local working paths,
+  not detected credentials. History and author/committer metadata were not
+  rewritten; publication must account for that historical privacy caveat.
 
 ## Capability and evidence matrix
 
@@ -95,8 +130,8 @@ latest full gate.
 | Metal capture/profiling | **Implemented** opt-in capture; **verified** timestamps and a retained local `.gputrace` | **Unverified original requirements:** Metal System Trace, profiler occupancy/register/stall/line costs; recorded xctrace attempts failed, public counters supplied timestamps only |
 | Performance sweep | **Verified** actual full-N native runs through 10 million fits, GPU/wall/preparation phases and saved plots | Main Lorentzian sweep repeats 1,024 patterns; 12 large SciPy cells are **partial**, not extrapolated full-N results; no new large sweep in this review |
 | Notebook/real data | **Implemented, verified** synthetic full cube and read-only NPY input/error/tail branch | No experimental dataset or browser click-through; external Jupyter TLS/plugin downloads unverified |
-| Distribution/platform support | Local editable and standalone macOS arm64 wheel checks **verified historically** | Linux/Windows, other chips, Python 3.10–3.12 wheels and downstream C++ install/export package remain **unverified/incomplete** |
-| Supply chain/security | Python lock pins and GoogleTest/Benchmark archive hashes implemented | metal-cpp archive digest absent; no formal security audit, fuzz campaign or general mutable-input safety claim |
+| Distribution/platform support | **Verified** local editable builds, wheel built from sdist, exact license payloads and isolated CPU/Metal wheel execution | Linux/Windows, other chips, Python 3.10–3.12/minimum-macOS wheels and downstream C++ install/export package remain **unverified/incomplete** |
+| Supply chain/security | **Verified** fresh downloads, all FetchContent archive hashes, metal-cpp header equivalence and manual digest rejection; bounded reachable-history secret-pattern review | No formal security audit, maintained tamper-test gate, fuzz campaign or general mutable-input safety claim; historical local paths remain in Git |
 
 ## Reproduce broader studies deliberately
 

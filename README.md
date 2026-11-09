@@ -226,6 +226,14 @@ batchfit code is not suppressed. See [VERIFICATION.md](VERIFICATION.md) for exac
 counts, upstream-only UBSan exclusion, cleanup, historical vs current checks and
 unverified platforms/tooling. A CPU-only or local pass is not a GPU/CI matrix pass.
 
+Pre-publication checks also rebuilt a wheel from the source distribution and
+verified isolated CPU64/Metal32 fitting, covariance and typing files. Fresh
+project-local dependency downloads work; earlier DNS limitations in the retained
+study notes are historical. The final macOS arm64 gate passed **120 CTest
+executions, 74 Python tests, 56 benchmark smoke cases** and the full notebook,
+including ASan/UBSan and Metal API/shader validation. See the verification guide
+for platform limits.
+
 ## Demo and further documentation
 
 The executed [hyperspectral notebook](examples/hyperspectral_demo.ipynb) fits a
@@ -240,3 +248,7 @@ parameter/status/error maps and a real `cube.npy[H,W,M]` + `x.npy[M]` example.
 - [Benchmark results and reproducible plots](BENCHMARKS.md)
 - [Numerical accuracy and uncertainty coverage](NUMERICS.md)
 - [Profiling and trace reproduction](PROFILING.md)
+
+## License
+
+[MIT](LICENSE) © 2026 Mykyta Kizilov.

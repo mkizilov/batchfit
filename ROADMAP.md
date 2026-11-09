@@ -16,6 +16,18 @@ and shader-profiler metrics remain unavailable; device/platform generality and
 several adversarial cases remain unverified. Performance capacity is not sustained
 utilization: large-file runs observed one pending command, not three.
 
+The pre-publication pass rechecked fresh PyPI/GitHub/Apple downloads, preserved
+upstream notices, added MIT package metadata and closed the missing metal-cpp
+archive-checksum gap. Header bytes matched the fresh archive and CMake checksum
+accept/reject checks passed. These are no longer blocked by registry/DNS access.
+Remaining tool-version enforcement and wider distribution checks stay below.
+The publication pass also verified a wheel built from its source distribution,
+exact notice payloads, isolated CPU64/Metal32 fitting/covariance and CPU-only
+Python tests (60 passes, 14 expected Metal skips). These are local CPython 3.9.6
+macOS arm64 results, not completion of the platform/minimum-OS matrix below.
+The final full gate also passes 120 CTest executions, 74 Python tests, the full
+notebook and 56 benchmark smoke cases with the required sanitizers/Metal layers.
+
 Estimates are engineering hours for one developer familiar with C++20, Metal and
 NumPy, including implementation, tests, review and documentation. They assume the
 existing local environment, unchanged four-model scope unless specified, at most
@@ -24,9 +36,9 @@ that need them. Hardware/Xcode acquisition, external-service setup, unattended
 multi-hour benchmark runtime and external review waiting time are excluded.
 No host configuration changes, services or public publishing are authorized here.
 
-The additive total is **238–418 hours** (midpoint 328 h), approximately **6–10.5
-40-hour engineering weeks**. Budget **298–523 hours** with 25% contingency. Steps
-1–8 account for **114–198 hours** and prioritize correctness, security,
+The additive total is **236–414 hours** (midpoint 325 h), approximately **6–10.5
+40-hour engineering weeks**. Budget **295–518 hours** with 25% contingency. Steps
+1–8 account for **112–194 hours** and prioritize correctness, security,
 verification and incomplete original profiling requirements before optimization
 or new API features. Dependencies constrain ordering; effort is counted once in
 each step.
@@ -69,21 +81,22 @@ each step.
   atomicity and crash-durability guarantees are stated separately.
 - **Estimated effort:** **16–28 hours**.
 
-## 3. Authenticate downloaded build inputs and verify tool pins
+## 3. Enforce tool pins and maintain dependency integrity checks
 
-- **Scope:** Add a reviewed digest for the versioned metal-cpp archive, test
-  tamper rejection before extraction, and check bootstrap tool versions against
-  supported pins without installing globally.
-- **Rationale:** GoogleTest/Benchmark have `URL_HASH`; metal-cpp's CMake download
-  has a versioned HTTPS URL but **no content digest**. Python lock pins do not
-  authenticate that independent download, and bootstrap accepts any uv on PATH.
-- **Dependencies:** An independently reviewed digest/source archive and existing
-  local FetchContent/bootstrap paths; no other step.
-- **Acceptance criteria:** Correct and deliberately corrupted archives take
-  opposite verified paths; corruption fails before use. CPU-only configuration
-  still performs no Metal download/link. Tool-version mismatches are actionable,
-  and cached/local installations preserve HOME/TMPDIR/toolchain settings.
-- **Estimated effort:** **4–8 hours**.
+- **Scope:** Enforce bootstrap tool versions against supported pins without
+  global installation and make archive tamper-rejection tests a maintained check.
+- **Rationale:** All FetchContent archives now have hashes, including metal-cpp;
+  fresh-download, installed-header equivalence and CMake rejection checks passed
+  during publication verification. Bootstrap still accepts any uv on PATH, and
+  the manual tamper test does not yet run in the ordinary gate.
+- **Dependencies:** Existing pinned archives and local FetchContent/bootstrap
+  paths; no other step.
+- **Acceptance criteria:** Automated intact/corrupted archive tests preserve
+  rejection before use; dependency updates review new bytes/notices and hashes.
+  CPU-only configuration still performs no Metal download/link. Tool-version
+  mismatches are actionable and cached/local installations preserve
+  HOME/TMPDIR/toolchain settings.
+- **Estimated effort:** **2–4 hours**.
 
 ## 4. Establish a real OS, compiler and Python verification matrix
 
@@ -217,13 +230,14 @@ each step.
 ## 12. Verify standalone distribution and downstream C++ integration
 
 - **Scope:** Add/test native library header/export installation and downstream
-  `find_package` consumption; verify clean wheel/sdist builds and installed-package
-  behavior without editable paths across the supported matrix.
+  `find_package` consumption; extend wheel/sdist and installed-package checks
+  across the supported Python/platform/minimum-OS matrix.
 - **Rationale:** The current CMake install rule covers the Python extension,
-  not a complete standalone C++ package. Wheel contents were inspected locally,
-  not across all declared interpreters/platforms.
-- **Dependencies:** Steps 3–4 and a stable documented support policy; publishing,
-  credentials and release/legal approval remain separate authorized work.
+  not a complete standalone C++ package. Fresh wheel-from-sdist, exact notices and
+  isolated CPU/Metal execution now pass locally; the `macosx_27_0_arm64` wheel does
+  not establish compatibility with every declared source-build OS or interpreter.
+- **Dependencies:** Steps 3–4 and a stable documented support policy; public
+  publishing and credentials remain separate authorized work.
 - **Acceptance criteria:** A clean project-local prefix and separate consumer
   compile/link without source-tree paths; CPU package never requires Metal.
   Installed wheels contain the extension, stubs and typing marker, pass applicable

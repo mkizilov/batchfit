@@ -1,6 +1,7 @@
 """Bounded benchmark smoke: real timings, parity, tails, censoring and figures."""
 import csv
 import importlib.util
+import json
 import math
 import pathlib
 import subprocess
@@ -11,6 +12,10 @@ root = pathlib.Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="benchmark-check-", dir=root / ".agent-local") as temporary:
     output = pathlib.Path(temporary) / "results"
     subprocess.run([sys.executable, str(root / "bench/run.py"), "--build", "--smoke", "--output", str(output)], check=True, cwd=root)
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["build_dir"] == "build/benchmark-suite"
+    assert metadata["output"] == str(output.relative_to(root))
+    assert str(root) not in (output / "metadata.json").read_text()
     with (output / "raw.csv").open() as stream:
         rows = list(csv.DictReader(stream))
     assert b"\r\n" not in (output/"raw.csv").read_bytes()

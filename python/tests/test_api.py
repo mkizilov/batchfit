@@ -1,4 +1,5 @@
 import gc
+import importlib.metadata
 import importlib.resources
 import sys
 import threading
@@ -159,6 +160,20 @@ def test_type_stubs_are_shipped():
     package = importlib.resources.files("batchfit")
     assert package.joinpath("py.typed").is_file()
     assert "def fit(" in package.joinpath("__init__.pyi").read_text()
+
+
+def test_distribution_license_is_shipped():
+    distribution = importlib.metadata.distribution("batchfit")
+    assert distribution.metadata["License-Expression"] == "MIT"
+    license_files = distribution.metadata.get_all("License-File", [])
+    assert "LICENSE" in license_files
+    assert "third_party/licenses/NOTICES.txt" in license_files
+    license_path = next(path for path in distribution.files or ()
+                        if str(path).endswith(".dist-info/licenses/LICENSE"))
+    text = license_path.read_text()
+    assert text.startswith("MIT License\n\nCopyright (c) 2026 Mykyta Kizilov\n")
+    assert "Permission is hereby granted, free of charge" in text
+    assert 'THE SOFTWARE IS PROVIDED "AS IS"' in text
 
 
 def test_native_entry_never_forcecasts():

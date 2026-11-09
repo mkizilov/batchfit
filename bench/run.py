@@ -208,7 +208,7 @@ def main():
     args.output.mkdir(parents=True,exist_ok=True)
     if (args.output/"raw.csv").exists():
         parser.error("refusing to overwrite an existing benchmark result set")
-    metadata={key:str(value) if isinstance(value,pathlib.Path) else value for key,value in vars(args).items()}
+    metadata={key:str(value.resolve().relative_to(ROOT)) if isinstance(value,pathlib.Path) else value for key,value in vars(args).items()}
     metadata.update(platform=platform.platform(),python=sys.version,numpy=np.__version__,scipy=scipy.__version__,started_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()))
     metadata["git_commit"]=subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
     if sys.platform=="darwin":

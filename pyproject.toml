@@ -6,6 +6,8 @@ build-backend = "scikit_build_core.build"
 name = "batchfit"
 version = "0.1.0"
 description = "Batched spectral fitting with C++ CPU and Apple Metal backends"
+license = "MIT"
+license-files = ["LICENSE", "third_party/licenses/*"]
 requires-python = ">=3.9,<3.13"
 dependencies = ["numpy==2.0.2"]
 
@@ -32,6 +34,7 @@ dev = [
 minimum-version = "build-system.requires"
 build-dir = "build/python/{wheel_tag}"
 wheel.packages = ["python/batchfit"]
+sdist.exclude = [".agent-local", ".cortexkit", ".opencode", ".tools", ".toolchain", ".venv", "build", "third_party/metal-cpp"]
 build.targets = ["_core"]
 build.tool-args = ["-j2"]
 

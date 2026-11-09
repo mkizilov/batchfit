@@ -53,6 +53,8 @@ with tempfile.TemporaryDirectory(prefix="nb-", dir=root / ".agent-local/tmp") as
         if "parameters" in cell.metadata.get("tags", []):
             cell.source += f"\nDEVICE = {args.device!r}\n"
     executed = execute(book, first)
+    setup = next(cell for cell in executed.cells if cell.get("id") == "setup")
+    assert all(str(root) not in output.get("text", "") for output in setup.get("outputs", []))
     images = 0
     summary = None
     for cell in executed.cells:

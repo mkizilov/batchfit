@@ -4,7 +4,7 @@ if [ ! -f CMakePresets.json ]; then
     echo 'Run scripts/bootstrap.sh from the repository root.' >&2
     exit 1
 fi
-# Preserve the orchestrator's HOME, TMPDIR and cache settings.
+# Preserve project-local HOME, TMPDIR and cache settings.
 export UV_PYTHON_DOWNLOADS=never
 if ! command -v uv >/dev/null 2>&1; then
     echo 'uv is required. Install uv 0.9.8 under .tools/ and put its directory on PATH.' >&2
