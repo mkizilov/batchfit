@@ -20,7 +20,8 @@ Extend this file with the project's language-specific architecture and verificat
 
 - C++20 library target `batchfit::batchfit`; public headers in `include/batchfit/`.
 - `src/cpu/` owns the numerical reference; `src/metal/` owns metal-cpp host code
-  and `.metal` shaders. Internal headers stay in `src/`. Python bindings are later.
+  and `.metal` shaders. Internal headers stay in `src/`. `python/bindings.cpp` and
+  `python/batchfit/` own the pybind11/scikit-build-core NumPy interface.
 - **The CPU reference is the source of truth. Every GPU result is tested against
   it.** Never loosen numerical tests merely to make a backend pass.
 - Check and report every Metal error with context: shader compilation, kernel
@@ -110,11 +111,21 @@ Extend this file with the project's language-specific architecture and verificat
   nonfinite guards, degenerate/unresolved statuses and NUMERICS.md's actual error
   tables. The full study keeps failed denominators and compares every kernel to
   CPU64. Gaussian's current v1/SIMD threshold is 1024, not the archived turn-9 512.
+- Python CPU inputs borrow aligned native C-contiguous float32/float64 buffers;
+  no forcecast is allowed at the native entry. Preserve owners across GIL release,
+  capsule-owned result arrays, required Metal transpose/conversion, two native
+  workers and exception-safe serialization. Explicit Metal never falls back.
+- Python auto preserves float64 on CPU and uses available Metal for float32.
+  Keep public/private stubs and py.typed packaged. Pytest retains every row in
+  its 1,000-per-model SciPy comparisons; never relax the precision tolerances.
 
 ## Setup and verification
 
 Keep uv 0.9.8 local (see README); `sh scripts/bootstrap.sh` creates `.venv` using
 uv and exact tool pins in `pyproject.toml`. Preserve supplied environment paths.
+The editable package/test pins are the `dev` extra. `scripts/check_python.sh`
+reinstalls against stable local build headers, runs pytest with bounded BLAS
+threads, and checks the binding compile database. The full check.sh includes it.
 clang-tidy 21.1.6 matches the current Apple SDK; the runner uses the actual build
 compiler's resource headers. `.clang-tidy` documents intentional ABI/style
 exceptions; the Metal bridge alone models Objective-C nil messaging explicitly.

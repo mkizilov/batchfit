@@ -7,7 +7,7 @@ fi
 export PATH="$PWD/.venv/bin:$PATH"
 export CMAKE_BUILD_PARALLEL_LEVEL=2
 export CTEST_PARALLEL_LEVEL=2
-for tool in python3 cmake ninja clang-format clang-tidy; do
+for tool in python3 uv cmake ninja clang-format clang-tidy; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Required tool missing: $tool. Run scripts/bootstrap.sh first." >&2
         exit 1
@@ -33,4 +33,5 @@ if [ "$(uname -s)" = Darwin ]; then
     python3 tools/check_pipeline.py build/metal/batchfit_fit_npy
     python3 tools/check_numerics.py build/metal/batchfit_numerics_study
 fi
-echo 'All checks pass: formatting, CPU tests, clang-tidy, benchmark smoke, and Metal tests on macOS.'
+sh scripts/check_python.sh
+echo 'All checks pass: C++/Python tests, formatting, clang-tidy, benchmark smoke, and Metal tests on macOS.'

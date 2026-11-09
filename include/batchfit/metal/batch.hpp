@@ -13,6 +13,7 @@
 namespace batchfit {
 enum class Device { Cpu, Metal };
 namespace metal {
+bool available();
 class PendingBatch;
 enum class KernelVariant { Automatic, ThreadPerFit, SimdPerFit, ThreadgroupPerFit };
 enum class MathMode { Safe, Fast };

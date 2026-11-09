@@ -12,8 +12,10 @@ The implementation provides build/test infrastructure, an internal squared-resid
 compute smoke primitive on CPU and Metal, shared CPU/MSL model definitions,
 chunked synthetic generation/NPY I/O, a single-fit CPU LM reference, and data-only
 automatic initial guesses and batched CPU fitting in float and double. It also
-includes an experimental one-thread-per-fit Metal v1 solver. It does **not**
-implement a runtime model registry or Python bindings yet.
+includes selectable Metal v1/cooperative solvers and Python bindings via pybind11/
+scikit-build-core. It does **not** implement an extensible runtime model registry;
+Python selects the four fixed model templates. See python/README.md for its
+implemented API, dtype/device policy, borrowed buffers, GIL and ownership rules.
 The backend-neutral API below remains a later contract; the implemented typed
 CPU/shared-Metal APIs are described in the implementation sections.
 

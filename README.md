@@ -6,6 +6,8 @@ contract. Shared Gaussian, Lorentzian, pseudo-Voigt and paired-Lorentzian models
 compile as both C++ and MSL. Single-fit/batched CPU LM solvers support float and
 double. Float32 Metal provides thread-, SIMD-, and threadgroup-per-fit paths with
 measured automatic dispatch. See the Metal sections for validation and limits.
+Python bindings expose `batchfit.fit` through pybind11/scikit-build-core; see
+[the Python API](python/README.md) for precision, copy and ownership rules.
 
 ```cpp
 #include <batchfit/models.hpp>
@@ -17,6 +19,28 @@ batchfit::models::Gaussian<double>::jacobian(3.0, params, jacobian);
 
 Parameter ordering, width conventions and domains are specified in
 [the model contract](DESIGN.md#shared-model-definitions).
+
+## Python quick start
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH"
+uv pip install -e .
+```
+
+```python
+import batchfit
+result = batchfit.fit(x, y, model="lorentzian", p0=None, bounds=None, device="auto")
+params, status, iterations, chi2 = result  # also result.params, result.status, ...
+```
+
+Use shared `x[M]`, fit-major `y[N,M]` (or a single `y[M]`). Outputs are NumPy
+arrays `[N,P]`, `[N]`, `[N]`, `[N]`. CPU borrows suitable contiguous arrays and
+preserves float64; auto uses Metal for float32 when available. Explicit Metal
+uses float32 with the necessary point-major layout preparation, never silent
+CPU fallback. Fitting releases the GIL; type stubs are shipped. See
+[python/README.md](python/README.md) for full defaults, bounds, statuses and the
+1,000-fits-per-model SciPy checks. `sh scripts/check_python.sh` verifies the
+editable package and native binding diagnostics.
 
 ## Single-fit CPU reference
 
@@ -427,7 +451,8 @@ cmake --build build/generator-release --parallel 2
 
 ## Local setup
 
-Requires a C++20 compiler and Python 3.9+. On macOS, Command Line Tools provide
+Requires a C++20 compiler and Python 3.9+ for native checks; the pinned Python
+package/test environment supports Python 3.9–3.12. On macOS, Command Line Tools provide
 Clang and framework headers; Metal executes on the default GPU. No offline shader
 compiler is needed. Do not install or alter system tools from this repository.
 
@@ -445,7 +470,8 @@ export PATH="$PWD/.venv/bin:$PATH"
 ```
 
 Use the corresponding pinned uv archive on other platforms. Bootstrap creates
-`.venv` using uv and installs exact development versions from `pyproject.toml`;
+`.venv` when absent, preserves an existing one, and installs the editable package
+plus exact development versions from `pyproject.toml`;
 it does not download a Python interpreter. Preserve supplied project-local
 HOME/TMPDIR/cache settings. Outside orchestration, set them under `.agent-local/`
 before installing anything. CMake downloads GoogleTest/Benchmark in `build/` and

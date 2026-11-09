@@ -10,5 +10,7 @@ if ! command -v uv >/dev/null 2>&1; then
     echo 'uv is required. Install uv 0.9.8 under .tools/ and put its directory on PATH.' >&2
     exit 1
 fi
-uv venv --python python3 .venv
-uv sync --no-managed-python
+if [ ! -d .venv ]; then
+    uv venv --python python3 .venv
+fi
+uv pip install --python .venv/bin/python -e '.[dev]'

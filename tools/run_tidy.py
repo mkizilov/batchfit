@@ -12,6 +12,8 @@ entries = json.loads((build / "compile_commands.json").read_text())
 resources = {}
 for filename in sorted({entry["file"] for entry in entries}):
     source = pathlib.Path(filename).resolve()
+    if len(sys.argv)>2 and source!=(root/sys.argv[2]).resolve():
+        continue
     if root / "src" in source.parents or source in (
         root / "tests/models_check.cpp",
         root / "tests/solver_check.cpp",
@@ -35,6 +37,7 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "tests/synthetic_check.cpp",
         root / "tools/generate.cpp",
         root / "tools/fit_npy.cpp",
+        root / "python/bindings.cpp",
     ):
         arguments = ["clang-tidy", str(source), "-p", str(build), "--quiet"]
         if sys.platform == "darwin":

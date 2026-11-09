@@ -64,6 +64,13 @@ struct AsyncResources {
 #include "capture_cpp.hpp"
 namespace batchfit::metal {
 
+bool available() {
+    const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+    if (NS::ProcessInfo::processInfo()->operatingSystemVersion().majorVersion < 15)
+        return false;
+    const auto device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
+    return device.get() != nullptr;
+}
 Context::Context() : Context(MathMode::Safe) {}
 Context::Context(MathMode mode) : runtime_(std::make_shared<detail::Runtime>()) {
     if (mode != MathMode::Safe && mode != MathMode::Fast)
@@ -271,6 +278,7 @@ Timings detail::run_gpu(Storage &storage, unsigned kernel, KernelVariant variant
 } // namespace batchfit::metal
 #else
 namespace batchfit::metal {
+bool available() { return false; }
 Context::Context() {
     throw std::runtime_error(
         "batchfit was built without BATCHFIT_METAL; Device::Metal is unavailable");
