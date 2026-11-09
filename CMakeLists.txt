@@ -164,6 +164,10 @@ if(BATCHFIT_BUILD_TESTS)
 endif()
 
 if(BATCHFIT_BUILD_BENCHMARKS)
+    if(BATCHFIT_BUILD_PYTHON)
+        pybind11_add_module(_benchmark MODULE bench/bindings.cpp)
+        target_link_libraries(_benchmark PRIVATE batchfit::batchfit)
+    endif()
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(googlebenchmark

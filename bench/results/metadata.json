@@ -1,0 +1,44 @@
+{
+  "build": false,
+  "build_dir": "/Users/mk-rune/test_projects/13-batchfit/build/benchmark-suite",
+  "output": "bench/results",
+  "models": [
+    "lorentzian"
+  ],
+  "ns": [
+    1,
+    10,
+    100,
+    300,
+    1000,
+    3000,
+    10000,
+    100000,
+    1000000,
+    10000000
+  ],
+  "points": [
+    32,
+    128,
+    512,
+    2048
+  ],
+  "workers": 10,
+  "chunk_fits": 16384,
+  "patterns": 1024,
+  "repeats": 3,
+  "large_repeats": 1,
+  "scipy_budget_seconds": 30.0,
+  "smoke": false,
+  "plot_only": false,
+  "platform": "macOS-27.2-arm64-arm-64bit",
+  "python": "3.9.6 (default, Oct 19 2026, 19:18:13) \n[Clang 21.0.0 (clang-2100.4.1.1)]",
+  "numpy": "2.0.2",
+  "scipy": "1.13.1",
+  "started_utc": "2026-11-09T02:29:13Z",
+  "git_commit": "ce6e296f4f116b0f282fad9878ee522a3e7fe84f",
+  "chip": "Apple M4",
+  "mac_model": "Mac16,10",
+  "finished_utc": "2026-11-09T02:51:06Z",
+  "peak_rss_bytes": 1537605632
+}

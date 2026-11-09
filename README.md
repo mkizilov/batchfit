@@ -8,6 +8,10 @@ double. Float32 Metal provides thread-, SIMD-, and threadgroup-per-fit paths wit
 measured automatic dispatch. See the Metal sections for validation and limits.
 Python bindings expose `batchfit.fit` through pybind11/scikit-build-core; see
 [the Python API](python/README.md) for precision, copy and ownership rules.
+The [unified benchmark](bench/README.md) compares SciPy loops, CPU and forced/
+automatic Metal paths from 1,000 to 10 million fits with bounded memory. Measured
+GPU/wall times, small-batch crossovers and saved log-log figures are in
+[BENCHMARKS.md](BENCHMARKS.md#turn-14-unified-python-loop-cpu-and-metal-sweep).
 
 ```cpp
 #include <batchfit/models.hpp>

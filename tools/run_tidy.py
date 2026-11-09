@@ -21,6 +21,7 @@ for filename in sorted({entry["file"] for entry in entries}):
         root / "tests/batch_check.cpp",
         root / "tests/batch_failure_check.cpp",
         root / "bench/cpu_baseline.cpp",
+        root / "bench/bindings.cpp",
         root / "bench/cpu_batch.cpp",
         root / "tests/metal_lm_check.cpp",
         root / "tests/cooperative_check.cpp",

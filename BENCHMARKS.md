@@ -1,4 +1,142 @@
-# CPU baseline v1
+# Benchmarks
+
+## Turn 14: unified Python-loop, CPU and Metal sweep
+
+`bench/run.py` drives the Release-only `bench/bindings.cpp` adapter and generates
+the [log-log throughput figure](bench/results/lorentzian_throughput.png) and
+[automatic-Metal phase figure](bench/results/lorentzian_phases.png), each also
+saved as SVG in `bench/results/`. Raw repetitions, actual median-wall summary
+rows and scientific environment metadata are retained in that directory.
+See [bench/README.md](bench/README.md) for timing definitions and runnable commands.
+
+### Executed workload and environment
+
+- Apple **Mac16,10 / M4**, 10 detected CPU cores, macOS 27.2 arm64; CPython 3.9.6,
+  NumPy 2.0.2, SciPy 1.13.1 and pinned Matplotlib 3.9.4. Build/test jobs stay at
+  two; this explicit benchmark uses **10 workers** only for `cpu_multi`.
+- The main sweep is **Lorentzian**, not a claim of a full sweep for all models.
+  The bounded all-model smoke exercises Gaussian, Lorentzian, pseudo-Voigt and
+  paired Lorentzians through all seven backends, tails, parity and figure output.
+- Main grid: **N={1,000,10,000,100,000,1,000,000,10,000,000}** and
+  **M={32,128,512,2048}**, plus N={1,10,100,300,3000} crossover probes.
+  Three repetitions below one million, one long repetition at/above one million;
+  native/SciPy order rotates. Min/max and repetition counts are retained.
+- Each M uses 1,024 deterministic SNR-20 noisy patterns and data-derived initial
+  guesses from the existing CPU benchmark workload. Large N cycles those patterns:
+  **all N fits are actually computed**, never extrapolated or result-cached.
+  Only validation uses cached per-pattern CPU references. These are not ten
+  million unique random spectra; cache/divergence behavior is workload-specific.
+- Bounded chunks of 16,384 fits; no full-N data/results retained. The largest
+  logical input is **81.92 GB** (10 million x 2048 float32 observations).
+  Measured whole-process peak RSS was **1,466.38 MiB**, including Python,
+  plotting, shared allocations and driver/runtime caches. No host settings,
+  affinity or power controls were changed; small timings show normal variability.
+- Native computation is float32; SciPy receives the same stored inputs converted
+  to float64, the same p0 and bounds, using bounded `curve_fit`/TRF versus native
+  analytic bounded LM. Uncertainties are disabled. Every completed output is
+  checked at the existing strict CPU parameter/cost/status tolerances.
+
+The 21.9-minute study has **720 raw runs / 280 model-N-M-backend summary cells**:
+**268 complete, 12 explicitly time-limited SciPy cells**, zero validation errors.
+All 240 native summary cells are complete. SciPy completed every tested N through
+10,000, but **did not complete N>=100,000** under the predeclared 30-second budget.
+Its large-N rows are not full-N measurements. The metadata's Git revision is the
+parent `ce6e296`; the new benchmark sources and results are committed by turn 14.
+
+### Measured endpoint: N=10 million
+
+All numbers below are actual seconds. GPU cells show **wall / GPU timestamp**;
+CPU cells show wall. Warm wall includes bounded allocation, packing/layout work,
+fitting API and readback, but excludes setup/warmup and validation.
+
+| M | CPU single | CPU 10 workers | Metal v1 | v2 SIMD/fit | v2 group/fit | Automatic |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 6.695 | 1.166 | 0.624 / 0.289 | 1.379 / 1.041 | 7.835 / 7.304 | **0.613 / 0.284** |
+| 128 | 21.872 | 4.146 | 2.435 / 1.569 | 2.773 / 1.921 | 8.051 / 7.161 | **2.401 / 1.604** |
+| 512 | 84.838 | 16.945 | 7.458 / 4.355 | 7.921 / 4.307 | 11.455 / 8.383 | **7.242 / 4.147** |
+| 2048 | 360.505 | 68.802 | 33.717 / 20.390 | 32.089 / 18.746 | **28.848 / 15.481** | 28.855 / 15.483 |
+
+Automatic wall throughput is respectively **16.32M, 4.166M, 1.381M and
+346.6k fits/s**: **1.90x, 1.73x, 2.34x, 2.38x** the ten-worker CPU path.
+V2 is not universally faster: whole-group fitting is expensive at small M;
+at M=2048 its wall improvement over v1 is about 1.17x, smaller than its kernel
+improvement because input preparation remains substantial. No production
+dispatcher policy was changed to fit this benchmark.
+
+At requested N=10 million the SciPy rows actually completed **64,451 / 56,693 /
+54,353 / 40,704** fits for M=32/128/512/2048 before the deadline, with measured
+prefix rates **2,197 / 1,934 / 1,852 / 1,382 fits/s**. These prefix measurements
+are plotted at their actual completed counts with x markers. They are **not**
+used to fabricate full-N wall time, speedup or ten-million-fit SciPy throughput.
+`--scipy-budget-seconds 0` runs the complete potentially multi-hour Python loop.
+
+### Below what N does GPU stop paying off?
+
+This is a **warm, provided-p0, end-to-end wall-time** comparison against the better
+of CPU single and CPU ten-worker paths. Requiring at least a 5% advantage at the
+candidate N and every larger measured N avoids declaring a crossover from a
+single noisy tie:
+
+| M | Measured small-batch result | First stable >=5% automatic-GPU advantage |
+|---:|---|---:|
+| 32 | CPU wins through N=3,000 | **N=10,000**; crossover bracket (3,000,10,000] |
+| 128 | CPU wins through N=3,000 | **N=10,000**; crossover bracket (3,000,10,000] |
+| 512 | CPU wins at N=10 | **N=100**; bracket (10,100] |
+| 2048 | CPU wins at N=1; N=10 is only a 3.35% GPU advantage over best CPU | **N=100** clear win; N=10 is a tie within the 5% noise budget |
+
+The GPU already beats **single-worker** CPU at N=1,000 for M=32/128, but not
+the better multithreaded path; conflating those comparisons understates the useful
+crossover. Cold GPU context/library/pipeline setup was separately measured at
+**1.381 s** on its first invocation. Primary figures do not hide that setup in a
+kernel-time label, but they do not charge it to every warm call either. A one-shot
+process making a tiny batch is strongly CPU-favored; the warm thresholds are not
+claimed as cold-start thresholds or a universal device/N policy.
+
+### Where wall time goes
+
+N=10 million, automatic Metal (seconds and fractions of the same actual run):
+
+| M | Packing/transposition | Synchronous fit API | GPU part of fit | Wall |
+|---:|---:|---:|---:|---:|
+| 32 | 0.156 (25.5%) | 0.445 (72.7%) | 0.284 (46.3%) | 0.613 |
+| 128 | 0.617 (25.7%) | 1.772 (73.8%) | 1.604 (66.8%) | 2.401 |
+| 512 | 2.799 (38.7%) | 4.435 (61.2%) | 4.147 (57.3%) | 7.242 |
+| 2048 | 13.054 (45.2%) | 15.794 (54.7%) | 15.483 (53.7%) | 28.855 |
+
+GPU time is a **subset** of fit API time, not another phase to add to it.
+Allocation/readback/control account for the remainder; readback here is only
+6–11 ms at ten million fits because outputs are small compared with observations.
+CPU row packing is contiguous and takes 0.024–1.844 s at the endpoint, whereas
+GPU point-major preparation costs more. Kernel-only rates therefore overstate
+end-to-end benefit. Preparation here means packing/conversion of already supplied
+patterns/initials: **generation and feature extraction for N unique spectra were
+not timed**. Small-pattern generation/guess/reference cost is recorded separately
+as `dataset_setup_seconds`, never extrapolated into a full-N observation.
+
+### Reproduce and verify
+
+```sh
+export PATH="$PWD/.venv/bin:$PATH"
+uv pip install -e '.[dev,benchmark]'
+python bench/run.py --build --workers 10 --output bench/results/rerun
+python bench/run.py --plot-only --output bench/results
+python tools/check_benchmarks.py
+sh scripts/check.sh
+```
+
+The benchmark's bounded smoke is part of the ordinary gate and never executes
+the large sweep or uses ten workers. It tests 56 all-model/backend cases,
+uneven chunk tails, phase accounting, GPU timestamps, PNG/SVG creation, detected
+numerical corruption and explicit SciPy censoring. Full platform/model/Python
+version coverage is not claimed. Results must be rerun for other GPUs or workload
+distributions rather than treating these M4 measurements as guarantees.
+The final combined gate passes **25 CPU CTests, 35 Metal CTests, 73 Python tests
+and the 56-case benchmark smoke**, formatting, native/binding clang-tidy and lock
+consistency. Plot-only replay of the saved results also passes. Python document
+diagnostics are clean; indexed C++ diagnostics remain partial without a root
+compile database, so actual compiler/tidy checks are the authority.
+
+## Earlier CPU/Metal baselines
 
 **Turn-13 uncertainty update:** `profiling/uncertainty_dispatch_results.csv`
 records the Release N=100,000 four-model / M=32–4096 forced-and-automatic rerun

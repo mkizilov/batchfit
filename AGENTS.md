@@ -43,6 +43,10 @@ Extend this file with the project's language-specific architecture and verificat
 - `BENCHMARKS.md` is the CPU baseline for every GPU performance step. Full
   N=100,000 matrices are Release-only explicit benchmarks; only those may use
   all detected cores. Ordinary check.sh runs filter to small benchmark smoke cases.
+- `bench/run.py` streams bounded chunks across the explicit N=1,000–10,000,000
+  study; only an explicit benchmark `--workers` choice may use all cores.
+  Keep actual completed counts, phase/GPU timestamps and censored SciPy rows;
+  never extrapolate them into full-N results. Ordinary smoke uses two workers.
 - Automatic guesses live in `include/batchfit/cpu/initial_guess.hpp`, separately
   from LM. Preserve edge-median baselines, centroid/FWHM width conventions and
   documented positive-emission/grid requirements. Never silently subtract a
